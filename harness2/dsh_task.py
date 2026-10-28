@@ -3,86 +3,14 @@
 from __future__ import annotations
 
 import difflib
-import os
 import shutil
 from pathlib import Path
 
 from . import config
 from .core import runmark, tree
 from .core.spec import BenchPrompts, BenchSpec, ChannelSpec
+from .snapshot import snapshot as snapshot
 from .substrate.dsh import DSH_SURFACE, DshSubstrate, write_base
-
-SKIP_DIRS = frozenset(
-    (".git", ".venv", "venv", "node_modules", "__pycache__", ".dsh", ".harness2", "runs", "_build")
-)
-
-
-def snapshot(source: Path, dest: Path, *, max_bytes=100_000_000, max_files=10_000) -> dict:
-    """Copy project files and relocate internal links without traversing build trees."""
-    source, dest = source.resolve(), dest.resolve()
-    if not source.is_dir() or source == Path(source.anchor) or source == Path.home():
-        raise ValueError("Choose a project directory, rather than the filesystem or home root")
-    if source == dest or source.is_relative_to(dest):
-        raise ValueError("Snapshot destination must be outside its source or below it")
-    files, links, skipped, size = [], [], [], 0
-
-    def visit(directory):
-        nonlocal size
-        for path in sorted(directory.iterdir()):
-            rel = path.relative_to(source).as_posix()
-            if path == dest or dest.is_relative_to(path) or path.name in SKIP_DIRS:
-                skipped.append(rel)
-            elif path.is_symlink():
-                try:
-                    resolved = path.resolve(strict=True)
-                except (OSError, RuntimeError) as exc:
-                    raise ValueError(
-                        f"Snapshot contains a broken or cyclic symlink: {rel}"
-                    ) from exc
-                if not resolved.is_relative_to(source):
-                    raise ValueError(f"Snapshot symlink leaves the project: {rel}")
-                links.append((path, resolved))
-                if len(files) + len(links) > max_files:
-                    raise ValueError("Project snapshot exceeds 10000 files and links")
-            elif path.is_dir():
-                visit(path)
-            elif path.is_file():
-                if (
-                    path.name == ".env"
-                    or path.name.startswith(".env.")
-                    and not path.name.endswith("example")
-                ):
-                    skipped.append(rel)
-                    continue
-                size += path.stat().st_size
-                files.append(path)
-                if size > max_bytes or len(files) + len(links) > max_files:
-                    raise ValueError(
-                        "Project snapshot exceeds 100 MB / 10000 files; choose a smaller workspace"
-                    )
-            else:
-                raise ValueError(f"Snapshot contains a special file: {rel}")
-
-    visit(source)
-    dest.mkdir(parents=True)
-    for path in files:
-        target = dest / path.relative_to(source)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(path, target)
-    installed_links = []
-    for path, resolved in links:
-        rel = path.relative_to(source).as_posix()
-        if resolved not in files and not any(p.is_relative_to(resolved) for p in files):
-            skipped.append(rel)
-            continue
-        target = dest / path.relative_to(source)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.symlink_to(
-            os.path.relpath(dest / resolved.relative_to(source), target.parent),
-            target_is_directory=resolved.is_dir(),
-        )
-        installed_links.append(rel)
-    return {"files": len(files), "symlinks": installed_links, "bytes": size, "excluded": skipped}
 
 
 def changes(source: Path, workspace: Path) -> str:

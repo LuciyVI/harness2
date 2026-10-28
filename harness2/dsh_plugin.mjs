@@ -17,6 +17,9 @@ export const Config = z.object({
   outputRoot: z.string().required().description('Cycle artifacts directory'),
   timeout: z.number().step(1).min(1).default(3600).description('Seconds per dsh session'),
   k: z.number().step(1).min(1).default(1),
+  snapshotMaxBytes: z.number().step(1).min(1).default(100000000).description('Maximum selected snapshot bytes'),
+  snapshotMaxFiles: z.number().step(1).min(1).default(10000).description('Maximum selected snapshot files and links'),
+  snapshotExclude: z.array(z.string()).default([]).description('Additional project-relative exclusion globs'),
 });
 
 // Fold only successfully completed human commands. Resume and fork inherit the
@@ -168,6 +171,7 @@ export function apply(ctx, config) {
     const worker = runWorker(config, {
       workspace: resolve(agent.session.header.cwd || policy.workspaceRoot), prompt,
       timeout: config.timeout, k: config.k,
+      snapshot: { max_bytes: config.snapshotMaxBytes, max_files: config.snapshotMaxFiles, exclude: config.snapshotExclude },
     }, env, combined);
     active.set(agent.session, { controller, output: worker.output, done: worker.done });
     ctx.logger.info('Harness² cycle started: %s', worker.output);

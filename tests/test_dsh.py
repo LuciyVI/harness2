@@ -384,8 +384,12 @@ class DshTests(unittest.TestCase):
             )
         pid = int(pidfile.read_text())
         stat = Path(f"/proc/{pid}/stat")
-        if stat.exists():
-            self.assertEqual(stat.read_text().split()[2], "Z")
+        try:
+            state = stat.read_text().split()[2]
+        except FileNotFoundError:
+            state = None  # A reaped child no longer has a /proc entry.
+        if state is not None:
+            self.assertEqual(state, "Z")
 
 
 if __name__ == "__main__":

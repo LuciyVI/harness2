@@ -12,6 +12,7 @@ from ..core.library import Library
 from ..core.proposer import Proposer
 from ..core.schedule import run_task
 from ..dsh_task import DshTaskAdapter, selected_result, snapshot
+from ..snapshot import SnapshotError
 from ..substrate import dsh_runtime
 
 
@@ -45,7 +46,10 @@ def main(argv=None):
         config.PHASE_WIDTH = 1
         config.PROPOSER_CONCURRENCY = 1
         source = Path(request["workspace"]).expanduser().resolve()
-        manifest = snapshot(source, root / "source")
+        options = request.get("snapshot", {})
+        if not isinstance(options, dict) or set(options) - {"max_bytes", "max_files", "exclude"}:
+            raise ValueError("snapshot must contain max_bytes, max_files and/or exclude")
+        manifest = snapshot(source, root / "source", **options)
         (root / "snapshot.json").write_text(json.dumps(manifest, indent=2) + "\n")
         adapter = DshTaskAdapter(
             root, prompt, timeout=timeout, base_harness=request.get("base_harness") or None
@@ -63,6 +67,11 @@ def main(argv=None):
         report = selected_result(adapter, result, k)
     except Exception as exc:
         report.update(error=f"{type(exc).__name__}: {exc}")
+        if isinstance(exc, SnapshotError):
+            path = root / "snapshot.json"
+            path.write_text(json.dumps(exc.manifest, indent=2) + "\n")
+            report.update(status="snapshot-failed", snapshot=str(path))
+            report["error"] += f"; snapshot report: {path}"
     finally:
         if cancelled:
             report.update(ok=False, error="Harness² cycle cancelled", cancelled=True)

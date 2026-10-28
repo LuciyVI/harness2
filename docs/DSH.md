@@ -89,11 +89,18 @@ sessions cannot start nested cycles.
 
 Choose a project directory in dsh and use `workspace-write` permission mode.
 This version accepts text tasks and project files; chat image/file attachments
-require ordinary dsh mode. The snapshot excludes `.git`, virtual environments,
-`node_modules`, Erlang `_build`, runtime directories and `.env` credentials.
-`snapshot.json` records exclusions and copied links. Internal symbolic links
-are relocated into each project copy; links outside the project, broken links
-and snapshots above 100 MB or 10,000 files are rejected explicitly. Whole recent text messages provide up to 64,000
+require ordinary dsh mode. Git projects select tracked files and non-ignored
+untracked inputs. Git submodules and nested repositories are excluded without
+traversing their contents. Plain directories use the runtime and credential
+filters. The snapshot excludes `.git`, virtual environments, `node_modules`,
+Erlang `_build`, runtime directories and `.env` credentials.
+`snapshot.json` records selection, exclusions, copied links, byte/file counts
+and the largest selected files. It is retained when planning exceeds a limit.
+Internal symbolic links are relocated into each project copy; links outside
+the project and broken links are rejected explicitly. Default limits remain
+100 MB and 10,000 entries. Configure `snapshotMaxBytes`, `snapshotMaxFiles`
+and project-relative `snapshotExclude` globs in the native `harness2-mode`
+settings for a different workspace policy. Whole recent text messages provide up to 64,000
 characters of prior chat context; the current task is kept in full.
 
 Artifacts, full trajectories, a library and a result report are under
