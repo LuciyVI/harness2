@@ -27,6 +27,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -165,6 +166,12 @@ class Proposer:
         t0 = time.time()
         for attempt in range(1, tries + 1):
             if attempt > 1:
+                if self.spec.kind == "dsh" and self.spec.progress:
+                    print(
+                        f"  [improver {label}] retry {attempt}/{tries} after {last}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
                 time.sleep(10 * (attempt - 1))
             tmp = Path(tempfile.mkdtemp(prefix="harness2-prop-"))
             try:
@@ -210,8 +217,20 @@ class Proposer:
                 return r
             except subprocess.TimeoutExpired:
                 last = f"timeout after {wall}s"
+                if self.spec.kind == "dsh" and self.spec.progress:
+                    print(
+                        f"  [improver {label}] attempt {attempt}/{tries} failed: {last}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
             except Exception as exc:
                 last = f"{type(exc).__name__}: {exc}"
+                if self.spec.kind == "dsh" and self.spec.progress:
+                    print(
+                        f"  [improver {label}] attempt {attempt}/{tries} failed: {last}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
             finally:
                 shutil.rmtree(tmp, ignore_errors=True)
 

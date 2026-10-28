@@ -108,6 +108,28 @@ Artifacts, full trajectories, a library and a result report are under
 path; the adjacent `<cycle-id>.log` contains progress. Timeout and recursion
 budget are configurable in the `harness2-mode` entry's native dsh settings.
 
+Watch all session states without interrupting a cycle:
+
+```bash
+watch -n 2 harness2-dsh-status
+# Or select the directory shown by /harness2 status:
+watch -n 2 harness2-dsh-status --cycle /absolute/path/to/cycles/<cycle-id>
+```
+
+In an existing editable checkout, `python -m harness2.cli.dsh_status` also works
+before reinstalling the command entry point. The viewer reports completed
+steps, the last recorded phase, termination reason, and event age. It includes
+legacy improver sessions linked from the cycle log under `/tmp`. New cycles
+keep improver recordings in `audit/` alongside execution recordings in
+`executions/`. It displays status fields without model text or tool payloads.
+
+`Deep diving` in the outer chat means it is waiting for the full cycle. A
+`step_start` heartbeat with an unchanged step count can be waiting for a model
+response or a tool; event age measures the recording, not model inactivity.
+`max-tokens` means an attempt exhausted the configured model output budget,
+even if its session wall timeout has not expired. Failed attempts and retries,
+and the terminal cycle result, are printed explicitly in the cycle log.
+
 The installer adds a marked block to the profile patch and backs up the
 original with mode `0600`. It does not modify the installed npm runtime or
 transport fixes. Remove the command with:

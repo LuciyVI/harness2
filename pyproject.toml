@@ -32,6 +32,7 @@ harness2-check = "harness2.cli.check:main"
 harness2-demo = "harness2.cli.demo:main"
 harness2-dsh-demo = "harness2.cli.dsh_demo:main"
 harness2-dsh-install = "harness2.cli.dsh_install:main"
+harness2-dsh-status = "harness2.cli.dsh_status:main"
 harness2-bridge = "harness2.cli.bridge:main"
 
 [tool.setuptools.packages.find]

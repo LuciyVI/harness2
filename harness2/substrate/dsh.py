@@ -184,23 +184,26 @@ class DshSubstrate:
         status_path = stream_path.with_suffix(".result.json")
         started = time.monotonic()
 
+        def notice(message):
+            if self.progress:
+                print(f"  [dsh {stream_path.parent.name}] {message}", file=sys.stderr, flush=True)
+
         def progress(elapsed):
-            events = list(runtime.read_events(projection))
+            try:
+                events = list(runtime.read_events(projection))
+                age = max(0, time.time() - projection.stat().st_mtime)
+            except OSError:
+                notice(f"{elapsed:.0f}s; event log is not readable yet")
+                return
             statuses = [event for event in events if event.get("type") == "status"]
             completed = sum(event.get("phase") == "step_end" for event in statuses)
             phase = statuses[-1].get("phase", "starting") if statuses else "starting"
-            print(
-                f"  [dsh {stream_path.parent.name}] {elapsed:.0f}s; completed steps={completed}; {phase}",
-                file=sys.stderr,
-                flush=True,
+            notice(
+                f"{elapsed:.0f}s; completed steps={completed}; {phase}; last recorded event {age:.0f}s ago"
             )
 
         if self.progress:
-            print(
-                f"  [dsh {stream_path.parent.name}] starting; timeout={timeout}s",
-                file=sys.stderr,
-                flush=True,
-            )
+            notice(f"starting; timeout={timeout}s; events={projection}")
         with tempfile.TemporaryDirectory(prefix="harness2-dsh-state-") as tmp:
             state = Path(tmp)
             patches = (Path(config.DSH_PATCH).expanduser().resolve(),) if config.DSH_PATCH else ()
@@ -256,16 +259,23 @@ class DshSubstrate:
                     )
                     + "\n"
                 )
+                notice(f"failed; wall timeout after {timeout}s; report={status_path}")
                 raise RuntimeError(error) from None
         result = runtime.outcome(projection, rc)
         result["wall_s"] = round(time.monotonic() - started, 3)
         if not result["ok"]:
+            reason = result["reason"]
+            kind = reason.get("kind") if isinstance(reason, dict) else reason
             status_path.write_text(
                 json.dumps({**result, "status": "failed", "workspace": str(workspace)}, indent=2)
                 + "\n"
             )
+            notice(
+                f"failed in {result['wall_s']:.1f}s; exit={rc}; reason={kind}; report={status_path}"
+            )
             raise RuntimeError(f"dsh failed (exit={rc}, reason={result['reason']}); see {stderr}")
         if not runtime.durable_complete(stream_path, result["session_id"]):
+            notice(f"failed; incomplete durable trajectory; events={stream_path}")
             status_path.write_text(
                 json.dumps(
                     {

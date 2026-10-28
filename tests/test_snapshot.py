@@ -158,6 +158,8 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual(report["reason"], "max-bytes")
         self.assertEqual(report["offending_path"], "large.txt")
         self.assertIn(str(output / "snapshot.json"), status["error"])
+        self.assertIn("[harness2] failed", result.stderr)
+        self.assertIn("snapshot report:", result.stderr)
 
     def test_invalid_limits_and_exclusions_fail_before_copy(self):
         for options in ({"max_bytes": 0}, {"max_files": True}, {"exclude": ["../private"]}):

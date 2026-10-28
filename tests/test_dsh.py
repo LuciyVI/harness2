@@ -1,5 +1,7 @@
 """dsh subprocess, evidence, isolation and benchmark integration regressions."""
 
+import contextlib
+import io
 import json
 import os
 import shlex
@@ -52,11 +54,12 @@ if 'WAIT_AFTER_OUTPUT' in prompt:
  print(json.dumps({'type':'session','sessionId':str(home)}),flush=True)
  print(json.dumps({'type':'status','phase':'step_start','step':1}),flush=True)
  time.sleep(30)
-with events.open('a') as f: f.write(json.dumps({'sessionId':str(home),'type':'turn/end','data':{'reason':{'kind':'completed'}}})+'\n')
+reason = 'max-tokens' if 'MAX_TOKENS' in prompt else 'completed'
+with events.open('a') as f: f.write(json.dumps({'sessionId':str(home),'type':'turn/end','data':{'reason':{'kind':reason}}})+'\n')
 print(json.dumps({'type':'session','sessionId':str(home)}))
-print(json.dumps({'type':'status','phase':'turn_end','reason':{'kind':'completed'}}))
+print(json.dumps({'type':'status','phase':'turn_end','reason':{'kind':reason}}))
 print(json.dumps({'type':'final','text':'done'}))
-if 'FAIL_AFTER_OUTPUT' in prompt: sys.exit(1)
+if 'FAIL_AFTER_OUTPUT' in prompt or 'MAX_TOKENS' in prompt: sys.exit(1)
 """
 
 
@@ -157,6 +160,24 @@ class DshTests(unittest.TestCase):
         ):
             projection.write_text("\n".join(map(json.dumps, events)))
             self.assertFalse(outcome(projection, 0)["ok"])
+
+    def test_progress_reports_output_token_limit_as_a_failure(self):
+        messages = io.StringIO()
+        stream = self.root / "limited/session.jsonl"
+        with (
+            contextlib.redirect_stderr(messages),
+            self.assertRaisesRegex(RuntimeError, "max-tokens"),
+        ):
+            DshSubstrate(progress=True).run_session(
+                "MAX_TOKENS",
+                workspace=self.root / "limited-workspace",
+                stream_path=stream,
+                harness_dir=self.harness,
+                timeout=10,
+            )
+        self.assertIn("failed in", messages.getvalue())
+        self.assertIn("exit=1; reason=max-tokens", messages.getvalue())
+        self.assertFalse(json.loads(stream.with_suffix(".result.json").read_text())["ok"])
 
     def test_materialisation_rejects_unloadable_skills(self):
         adapter = JobBenchAdapter("dsh")

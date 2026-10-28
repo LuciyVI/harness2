@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import json
 import signal
+import sys
+import time
 from pathlib import Path
 
 from .. import config
@@ -36,6 +38,7 @@ def main(argv=None):
 
     previous = {s: signal.signal(s, stop) for s in (signal.SIGTERM, signal.SIGINT)}
     report = {"ok": False, "output": str(root)}
+    started = time.monotonic()
     try:
         prompt = request["prompt"]
         if not isinstance(prompt, str) or not prompt.strip():
@@ -51,10 +54,20 @@ def main(argv=None):
             raise ValueError("snapshot must contain max_bytes, max_files and/or exclude")
         manifest = snapshot(source, root / "source", **options)
         (root / "snapshot.json").write_text(json.dumps(manifest, indent=2) + "\n")
+        print(
+            f"[harness2] snapshot ready: {manifest['files']} files, {manifest['bytes']} bytes",
+            file=sys.stderr,
+            flush=True,
+        )
         adapter = DshTaskAdapter(
             root, prompt, timeout=timeout, base_harness=request.get("base_harness") or None
         )
-        prop = Proposer(adapter.spec.channels["proposer"])
+        prop = Proposer(adapter.spec.channels["proposer"], audit_dir=root / "audit")
+        print(
+            f"[harness2] adaptation starting; k={k}; audit={root / 'audit'}",
+            file=sys.stderr,
+            flush=True,
+        )
         result = run_task(
             "task",
             k,
@@ -76,6 +89,14 @@ def main(argv=None):
         if cancelled:
             report.update(ok=False, error="Harness² cycle cancelled", cancelled=True)
         (root / "result.json").write_text(json.dumps(report, indent=2) + "\n")
+        status = "cancelled" if cancelled else "completed" if report["ok"] else "failed"
+        print(
+            f"[harness2] {status} after {time.monotonic() - started:.1f}s; report={root / 'result.json'}",
+            file=sys.stderr,
+            flush=True,
+        )
+        if report.get("error"):
+            print(f"[harness2] error: {report['error']}", file=sys.stderr, flush=True)
         for s, handler in previous.items():
             signal.signal(s, handler)
     print(json.dumps(report))
