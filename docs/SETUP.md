@@ -140,6 +140,13 @@ changing either. `harness2-check` reports stale configuration until then.
 Codex runs with its sandbox disabled. Review the
 [executor network restrictions](EXPERIMENTS.md#web-access) before evaluation.
 
+## DeepSeek Harness executor
+
+Use `--substrate dsh` to run tasks through an installed DeepSeek Harness, and
+`HARNESS2_IMPROVER_CHANNEL=dsh` to use it for improvement sessions as well.
+See the [dsh setup and validation guide](DSH.md) for private profiles, model
+configuration, a small model-backed demo, and container settings.
+
 ## Network access during setup
 
 Setup downloads dependencies from the following hosts:

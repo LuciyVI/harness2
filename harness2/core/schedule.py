@@ -308,7 +308,10 @@ def _write_summary(summary_path: Path, res: TaskResult) -> None:
                 merged["errors"] = list(merged.get("errors") or [])
                 seen = {json.dumps(e, sort_keys=True, default=str) for e in merged["errors"]}
                 for e in old.get("errors") or []:
-                    if e == "no base rollout produced anything" and res.status in ("ok", "partial"):
+                    if str(e).startswith("no base rollout produced anything") and res.status in (
+                        "ok",
+                        "partial",
+                    ):
                         continue
                     mode = str(e).partition(":")[0]
                     if (
@@ -625,10 +628,21 @@ def run_task(
     rolled = _roll_bases(task_id, adapter, pending, dead_dir)
     base: list[RunView] = [rolled[label] for label in labels]
 
-    res.base = [{"label": b.label, "run_id": b.run_id, "run_dir": str(b.run_dir)} for b in base]
+    res.base = [
+        {
+            "label": b.label,
+            "run_id": b.run_id,
+            "run_dir": str(b.run_dir),
+            "ok": b.ok,
+            "delivered": b.delivered,
+            "error": b.error,
+        }
+        for b in base
+    ]
     if not any(b.ok for b in base):
         res.status = "base-failed"
-        res.errors.append("no base rollout produced anything")
+        details = "; ".join(f"{b.label}: {b.error}" for b in base if b.error)
+        res.errors.append("no base rollout produced anything" + (f": {details}" if details else ""))
         _write_summary(summary_path, res)
         return res
 

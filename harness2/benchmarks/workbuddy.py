@@ -43,12 +43,13 @@ from ..core.spec import BenchPrompts, BenchSpec, resolve_channel_model
 from ..substrate import opencode as OC
 from ..substrate.base import Install, RunRequest
 from ..substrate.codex import CODEX_SURFACE, CodexSubstrate
+from ..substrate.dsh import DshSubstrate, write_base
 from ..substrate.opencode import OPENCODE_SURFACE, OpencodeSubstrate
 from . import wb_render as RENDER
 from .tasks import discover, select
 
 SCOREABLE = frozenset({"code", "web", "office"})
-SUBSTRATES = ("oc", "cx")
+SUBSTRATES = ("oc", "cx", "dsh")
 
 _BASE_LOCK = threading.Lock()
 _BASE_DONE: set[Path] = set()
@@ -510,6 +511,34 @@ def _job_yaml(
                 hp["prompt_template_path"] = str(composed.resolve())
         hp_lines = "\n".join(f"  {key}: {json.dumps(val)}" for key, val in sorted(hp.items()))
         extra = f"harness_params_override:\n{hp_lines}\n"
+    elif substrate == "dsh":
+        harness = f"dsh-harness/{config.DSH_VERSION}"
+        hp = {
+            "DSH_MODEL": config.DSH_MODEL,
+            "DSH_SOURCE_HOME": str(config.DSH_HOME),
+            "DSH_SOURCE_PROFILE": config.DSH_PROFILE,
+            "DSH_PERMISSION_MODE": config.DSH_PERMISSION_MODE,
+            "DSH_PATCH": config.DSH_PATCH,
+            "DSH_CONTAINER_PATCH": config.DSH_CONTAINER_PATCH,
+        }
+        if ws is not None:
+            hp["WB_HARNESS_WS"] = str(ws.resolve())
+        hp_lines = "\n".join(f"  {key}: {json.dumps(val)}" for key, val in sorted(hp.items()))
+        forwarded = {
+            key: os.environ[key]
+            for key in ("DS4_API_KEY", "DEEPSEEK_API_KEY", "SEARXNG_BASE_URL")
+            if key in os.environ
+        }
+        env_lines = "\n".join(f"  {key}: {json.dumps(val)}" for key, val in forwarded.items())
+        extra = (
+            "extra_allowed_hosts:\n"
+            + "".join(f"  - {json.dumps(host)}\n" for host in config.DSH_CONTAINER_ALLOWED_HOSTS)
+            + "environment_override:\n  mounts:\n    - type: bind\n"
+            f"      source: {json.dumps(str(config.DSH_DIST))}\n"
+            "      target: /opt/dsh\n      read_only: true\n"
+            f"harness_params_override:\n{hp_lines}\n"
+            + (f"env_override:\n{env_lines}\n" if env_lines else "")
+        )
     else:
         harness = _harness_cx()
         hp = {"CODEX_MODEL": config.SOLVER_MODEL_CX}
@@ -621,6 +650,7 @@ def run_batch(
             **os.environ,
             "NO_FORCE_BUILD": "1",
             "HARNESS2_WB_VERTEX_URL": config.VERTEX_OPENAI_URL + "/chat/completions",
+            "HARNESS2_DSH_UNUSED_BACKEND": "http://127.0.0.1:9/v1",
         }
         try:
             with _slots[substrate]:
@@ -656,7 +686,7 @@ def spec_for(subset: str, substrate: str) -> BenchSpec:
     return BenchSpec(
         name=f"wb-{subset}",
         runs_root=config.RUNS / "wb" / subset,
-        install_mode="home_dir_jinja" if substrate == "oc" else "codex_root",
+        install_mode={"oc": "home_dir_jinja", "cx": "codex_root", "dsh": "dsh_profile"}[substrate],
         prompts=workbuddy_prompts(subset),
         channels={"proposer": channel, "selector": channel},
         domain_word="category",
@@ -682,11 +712,9 @@ class WbAdapter:
         self.subset = subset
         self.subset_info = SUBSETS[subset]
         self.spec = spec_for(subset, substrate)
-        self.substrate = (
-            OpencodeSubstrate(launcher=self._launch)
-            if substrate == "oc"
-            else CodexSubstrate(launcher=self._launch)
-        )
+        self.substrate = {"oc": OpencodeSubstrate, "cx": CodexSubstrate, "dsh": DshSubstrate}[
+            substrate
+        ](launcher=self._launch)
 
     def tasks(self, split: str = "all") -> list[str]:
         return select(
@@ -737,13 +765,19 @@ class WbAdapter:
 
     def _cell_identity(self) -> dict:
         """What makes two rollouts of one label the same rollout, beyond the harness."""
-        return {
-            "solver": config.SOLVER_MODEL_OC
-            if self.substrate.name == "oc"
-            else config.SOLVER_MODEL_CX,
+        identity = {
+            "solver": {
+                "oc": config.SOLVER_MODEL_OC,
+                "cx": config.SOLVER_MODEL_CX,
+                "dsh": config.DSH_MODEL,
+            }[self.substrate.name],
             "oc_ver": config.WB_OC_HARNESS_VER,
             "connection": config.WB_MODEL_CONNECTION,
         }
+        if self.substrate.name == "dsh":
+            identity["dsh"] = self.substrate.identity()
+            identity["dsh_version"] = config.DSH_VERSION
+        return identity
 
     def _identity_matches(self, trial: Path) -> bool:
         """True when `trial`'s marker names this cell's executor identity."""
@@ -752,7 +786,7 @@ class WbAdapter:
 
     def _reusable(self, trial: Path, harness_dir: Path | None) -> bool:
         return (
-            _trial_finished(trial)
+            self._finished(trial)
             and RM.is_complete(trial, harness_dir=harness_dir)
             and self._identity_matches(trial)
         )
@@ -782,7 +816,7 @@ class WbAdapter:
             return sum(
                 1
                 for t in self._trials(label, task_id)
-                if _trial_finished(t)
+                if self._finished(t)
                 and _mark_matches(t, install.fingerprint)
                 and self._identity_matches(t)
             )
@@ -799,8 +833,23 @@ class WbAdapter:
             need=lambda tid: k - _have(tid),
             timeout_s=req.timeout or None,
         )
-        fresh = [t for t in _trials_in(new_dirs, req.task_ref, self.subset) if _trial_finished(t)]
+        fresh = [t for t in _trials_in(new_dirs, req.task_ref, self.subset) if self._finished(t)]
         return self._rank(fresh)
+
+    def _finished(self, trial: Path) -> bool:
+        if not _trial_finished(trial):
+            return False
+        if self.substrate.name != "dsh":
+            return True
+        from ..substrate import dsh_runtime
+
+        agent = Path(trial) / "agent"
+        if not (agent / "dsh-complete.json").is_file():
+            return False
+        result = dsh_runtime.outcome(agent / "dsh-headless.jsonl", 0)
+        return result["ok"] and dsh_runtime.durable_complete(
+            agent / "dsh-output.jsonl", result["session_id"]
+        )
 
     def execute(
         self, task_id: str, harness_dir: Path | None, run_id: str, *, timeout: int | None = None
@@ -861,7 +910,9 @@ class WbAdapter:
         return RENDER.body_chars(Path(run_dir), self.subset) >= 200
 
     def trajectory_path(self, run_dir: Path) -> Path:
-        stream = "oc-output.txt" if self.substrate.name == "oc" else "codex-output.jsonl"
+        stream = {"oc": "oc-output.txt", "cx": "codex-output.jsonl", "dsh": "dsh-output.jsonl"}[
+            self.substrate.name
+        ]
         return Path(run_dir) / "agent" / stream
 
     def trajectory(self, run_dir: Path, *, obs_trunc: int) -> str:
@@ -907,6 +958,9 @@ class WbAdapter:
                         d,
                         stubs=True,
                     )
+                elif self.substrate.name == "dsh":
+                    # The native baseline receives the task and source profile only.
+                    write_base(d, "")
                 else:
                     HT.write_tree(
                         CODEX_SURFACE,
@@ -945,9 +999,13 @@ class WbAdapter:
                 f"scripts/setup_benchmark.py wb"
             )
         slugs = (
-            [_harness_oc(fork=False), _harness_oc(fork=True)]
-            if self.substrate.name == "oc"
-            else [_harness_cx()]
+            [f"dsh-harness/{config.DSH_VERSION}"]
+            if self.substrate.name == "dsh"
+            else (
+                [_harness_oc(fork=False), _harness_oc(fork=True)]
+                if self.substrate.name == "oc"
+                else [_harness_cx()]
+            )
         )
         for slug in slugs:
             family, _, ver = slug.partition("/")
@@ -962,6 +1020,26 @@ class WbAdapter:
             self.substrate.preflight(require_dist=True, require_bridge=True)
         else:
             self.substrate.preflight()
+        if self.substrate.name == "dsh":
+            if (
+                not (config.DSH_DIST / "node").is_file()
+                or not (config.DSH_DIST / "node_modules/@deepseek-ai/dsh/lib/bin.js").is_file()
+            ):
+                raise RuntimeError(
+                    "dsh container runtime missing; run harness2-setup wb --substrate dsh"
+                )
+            if (
+                not config.DSH_CONTAINER_PATCH
+                or not Path(config.DSH_CONTAINER_PATCH).expanduser().is_file()
+            ):
+                raise RuntimeError(
+                    "Set HARNESS2_DSH_CONTAINER_PATCH to a dsh provider patch with a container-accessible model URL"
+                )
+            from ..substrate.dsh_runtime import portable_plugin_links
+
+            modules = config.DSH_HOME / "profiles" / config.DSH_PROFILE / "node_modules"
+            if modules.is_dir():
+                portable_plugin_links(modules)
 
     def _killed(self, run_dir: Path) -> bool:
         """True when the capture stream ends on a provider error object, i.e. the rollout was

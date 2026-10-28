@@ -40,6 +40,7 @@ from ..core.spec import BenchPrompts, BenchSpec, resolve_channel_model
 from ..install import codex_config_error
 from ..substrate.base import Install, RunRequest
 from ..substrate.codex import CodexSubstrate
+from ..substrate.dsh import DshSubstrate, write_base
 from ..substrate.opencode import OUTPUT_TOKEN_MAX, OpencodeSubstrate
 from .tasks import discover, select
 
@@ -494,9 +495,9 @@ def render_opencode_tree(staged: Path, render_dir: Path, ctx: dict) -> None:
             shutil.copy(p, rd / ".opencode" / "plugin" / p.name)
 
 
-_INSTALL_MODE = {"oc": "workspace_agents_md", "cx": "codex_root"}
+_INSTALL_MODE = {"oc": "workspace_agents_md", "cx": "codex_root", "dsh": "dsh_profile"}
 
-_DEFAULT_TIMEOUT = {"oc": 2400, "cx": 3600}
+_DEFAULT_TIMEOUT = {"oc": 2400, "cx": 3600, "dsh": 3600}
 
 
 def _channels() -> dict:
@@ -507,7 +508,7 @@ def _channels() -> dict:
 
 def make_spec(substrate: str) -> BenchSpec:
     if substrate not in _INSTALL_MODE:
-        raise ValueError(f"JobBench substrate must be 'oc' or 'cx', got {substrate!r}")
+        raise ValueError(f"JobBench substrate must be oc, cx, or dsh, got {substrate!r}")
     return BenchSpec(
         name="jb",
         runs_root=config.RUNS / "jb",
@@ -632,12 +633,12 @@ class JobBenchAdapter:
     ):
         self.split_file = split_file
         self.spec = make_spec(substrate)
-        launcher = self._launch_opencode if substrate == "oc" else self._launch_codex
-        self.substrate = (
-            OpencodeSubstrate(launcher=launcher)
-            if substrate == "oc"
-            else CodexSubstrate(launcher=launcher)
-        )
+        cls, launcher = {
+            "oc": (OpencodeSubstrate, self._launch_opencode),
+            "cx": (CodexSubstrate, self._launch_codex),
+            "dsh": (DshSubstrate, self._launch_dsh),
+        }[substrate]
+        self.substrate = cls(launcher=launcher)
         self.timeout = int(timeout or _DEFAULT_TIMEOUT[substrate])
         self.store = Path(store_root) if store_root else config.RUNS / "jb" / "dataset"
 
@@ -752,7 +753,14 @@ class JobBenchAdapter:
             mark,
             run_id=run_id,
             harness_dir=harness_dir,
-            extra={"output_fingerprint": self._output_fingerprint(out)},
+            extra={
+                "output_fingerprint": self._output_fingerprint(out),
+                **(
+                    {"executor_identity": self.substrate.identity()}
+                    if self.substrate.name == "dsh"
+                    else {}
+                ),
+            },
         )
         return dirs[0]
 
@@ -765,6 +773,10 @@ class JobBenchAdapter:
         marker = RM.read_mark(trajectory_dir) or {}
         return (
             "output_fingerprint" in marker
+            and (
+                self.substrate.name != "dsh"
+                or marker.get("executor_identity") == self.substrate.identity()
+            )
             and marker["output_fingerprint"] == self._output_fingerprint(run_dir)
             and (
                 self.delivered(run_dir)
@@ -827,6 +839,31 @@ class JobBenchAdapter:
             }
         )
         self._run_runner(CX_RUNNER, env, wall=t + 600, label=label)
+        return [self._require_artifacts(task_id, label)]
+
+    def _launch_dsh(self, req: RunRequest, install: Install) -> list[Path]:
+        from .jb_opencode_runner import PROMPT
+
+        task_id, label, timeout = self._launch_common(req)
+        out, traj = self._out_dir(task_id, label), self._traj_dir(task_id, label)
+        traj.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="harness2-jb-dsh-") as temp:
+            workspace = Path(temp)
+            task_folder = workspace / "task_folder"
+            shutil.copytree(self.store / task_id / "task_folder", task_folder)
+            output = workspace / "output"
+            output.mkdir()
+            self.substrate.run_session(
+                PROMPT.format(task_folder=task_folder, output_dir=output, workspace=workspace),
+                workspace=workspace,
+                stream_path=traj / "dsh_session.jsonl",
+                harness_dir=install.staging_dir,
+                timeout=timeout,
+                extra_env={
+                    "PATH": f"{config.JB_JUDGE_PYTHON.parent}:" + os.environ.get("PATH", "")
+                },
+            )
+            shutil.copytree(output, out, dirs_exist_ok=True)
         return [self._require_artifacts(task_id, label)]
 
     def _run_runner(self, runner: Path, env: dict, *, wall: int, label: str) -> None:
@@ -948,6 +985,16 @@ class JobBenchAdapter:
         return str(self._extract(d)["flat"]) if d.is_dir() else ""
 
     def base_harness(self) -> Path:
+        if self.substrate.name == "dsh":
+            base = self.spec.runs_root / "_base_harness_dsh"
+            with _STORE_SEED_LOCK:
+                if not HT.is_tree(self.substrate.surface(), base):
+                    write_base(
+                        base,
+                        "Complete the requested work using the supplied task files. "
+                        "Write final deliverables only to the specified output directory and verify them.",
+                    )
+            return base
         base = OC_BASE_HARNESS if self.substrate.name == "oc" else CX_BASE_HARNESS
         if not HT.is_tree(self.substrate.surface(), base):
             raise FileNotFoundError(

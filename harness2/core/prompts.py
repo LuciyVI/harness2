@@ -614,6 +614,40 @@ class _SurfaceText:
     tts_surface: str
 
 
+_SURFACE_DSH = """\
+# WHAT YOU CAN CHANGE
+
+The dsh harness is an editable tree:
+
+| path | purpose | runtime behavior |
+|---|---|---|
+| `systemprompt.md` | role and procedure | always in the system prompt |
+| `guardrails.md` | standing rules | always in the system prompt |
+| `LongTermMEMORY.md` | reusable domain facts | always in the system prompt |
+| `tool_descriptions/tool_guidance.md` | tool guidance | always in the system prompt |
+| `skills/<name>/SKILL.md` | a triggered workflow | loaded on demand by the native skill tool |
+| `skills/<name>/scripts/*` | helpers carried with a skill | invoked on demand |
+| `scripts/<name>.py` | deterministic helpers | run with python3 through bash |
+
+Always-on text has a combined 24,000-character limit. Prefer a narrowly triggered
+skill for a reusable workflow and a Python helper for a deterministic operation.
+Keep standing instructions short and remove duplication when adding a rule.
+
+Skills need YAML frontmatter between --- lines with `name:` matching the directory
+and a nonempty `description:`. Names must be lowercase kebab-case, such as
+`check-totals`; underscores are invalid. Name each skill explicitly in the always-on
+text with a narrow trigger. If it invokes a helper, ship that helper in the same edit.
+
+This deployment has no editable subagent definitions, runtime plugins, or hooks.
+Do not create sub_agents/, plugin/, .codex/, or OpenCode configuration files.
+Existing dsh tools and source-profile plugins remain available to the solver.
+Prompt instructions and scripts do not enforce behavior inside the tool loop.
+
+Keep edits reusable across tasks. Never store this task's specific answer or source
+facts in the harness, and do not change a deliverable's required shape.
+""" + _surface_part(_SURFACE_OPENCODE, "# HOW TO MAKE A CHANGE")
+
+
 def _build_surface_texts() -> dict[str, _SurfaceText]:
     oc_tts = "\n\n".join(
         [
@@ -630,6 +664,18 @@ def _build_surface_texts() -> dict[str, _SurfaceText]:
         ]
     )
     return {
+        "dsh": _SurfaceText(
+            surface_md=_SURFACE_DSH,
+            inv=_INV_TEMPLATE.replace(
+                "__LOOP_LEVER__",
+                "check implemented in a Python helper, invoked explicitly by a short rule",
+            ),
+            dom=_DOM_TEMPLATE.replace(
+                "__TRIGGER_SENTENCE__",
+                "Name the skill in the always-on text with its precise trigger in the same edit.",
+            ),
+            tts_surface=_SURFACE_DSH,
+        ),
         "opencode": _SurfaceText(
             surface_md=_SURFACE_OPENCODE,
             inv=_INV_TEMPLATE.replace(

@@ -58,6 +58,8 @@ class SurfaceSpec:
     reject_empty_always_on: bool = False
 
     stubs: tuple[tuple[str, str], ...] = ()
+    skill_name_pattern: str | None = None
+    require_skill_frontmatter: bool = False
 
 
 @lru_cache(maxsize=8)
@@ -268,7 +270,17 @@ def _check_skills(surface: SurfaceSpec, tree: Tree, body: str, errs: list[str]) 
     """Append every skill-frontmatter and untriggered-skill problem; return the skill names."""
     skills = skill_names(surface, tree)
     for name in skills:
+        if surface.skill_name_pattern and not re.fullmatch(surface.skill_name_pattern, name):
+            errs.append(
+                f"{surface.skill_dir}/{name}/SKILL.md: this framework requires lowercase kebab-case skill names"
+            )
         fm = tree[f"{surface.skill_dir}/{name}/SKILL.md"][:600]
+        if surface.require_skill_frontmatter and not re.match(
+            r"\A---\r?\n.*?\r?\n---(?:\r?\n|$)", fm, re.S
+        ):
+            errs.append(
+                f"{surface.skill_dir}/{name}/SKILL.md needs YAML frontmatter between --- lines"
+            )
         if not re.search(r"^description:\s*\S", fm, re.M):
             errs.append(
                 f"{surface.skill_dir}/{name}/SKILL.md needs a `description:` in its "

@@ -48,7 +48,10 @@ class WorkflowTests(unittest.TestCase):
         )
 
     def test_recursion_budget_and_resume(self):
-        with patch.dict(config.PROPOSER_MODEL_BY_CHANNEL, {"opencode": "", "claude_cli": ""}):
+        with (
+            patch.object(config, "DEFAULT_PROPOSER_CHANNEL", "opencode"),
+            patch.dict(config.PROPOSER_MODEL_BY_CHANNEL, {"opencode": "", "claude_cli": ""}),
+        ):
             unresolved = resolve_channel_model(None, None)
             self.assertEqual(unresolved.model, "")
             with self.assertRaises(ValueError):
@@ -223,6 +226,22 @@ class WorkflowTests(unittest.TestCase):
         )
         self.adapter.score.assert_not_called()
         self.assertEqual((rows[0].graded, rows[0].n_passed), (False, None))
+
+    def test_failed_base_reports_cause_and_clears_it_after_recovery(self):
+        with patch.object(
+            self.adapter,
+            "execute",
+            side_effect=RuntimeError("inference wall timeout; see session.jsonl"),
+        ):
+            failed = self.run_stream(k=1)
+        self.assertEqual(failed["failed"], 2)
+        summary_path = self.adapter.spec.runs_root / "demo-oc-agg1/ledger-1/summary.json"
+        summary = json.loads(summary_path.read_text())
+        self.assertIn("inference wall timeout", summary["base"][0]["error"])
+        self.assertIn("inference wall timeout", summary["errors"][0])
+        repaired = self.run_stream(k=1)
+        self.assertEqual((repaired["done"], repaired["failed"]), (2, 0))
+        self.assertEqual(json.loads(summary_path.read_text())["errors"], [])
 
 
 if __name__ == "__main__":

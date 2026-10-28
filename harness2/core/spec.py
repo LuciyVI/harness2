@@ -30,7 +30,7 @@ from .tree import SurfaceSpec
 
 ModelId = str
 
-CHANNELS = ("claude_cli", "opencode")
+CHANNELS = ("claude_cli", "opencode", "dsh")
 
 
 @dataclass(frozen=True)
@@ -42,6 +42,9 @@ class ChannelSpec:
     effort: str = "high"
     steps: int = 120
     timeout: int = 3600
+    tool_allowlist: tuple[str, ...] | None = None
+    progress: bool = False
+    inline_context: bool = False
 
     def __post_init__(self) -> None:
         if self.kind not in CHANNELS:
@@ -73,7 +76,7 @@ def resolve_channel_model(
         if use_default:
             return ChannelSpec(kind, "", effort=effort, steps=steps, timeout=timeout)
         raise ValueError("model override must not be empty")
-    if kind == "opencode" and "/" not in model:
+    if kind in ("opencode", "dsh") and "/" not in model:
         raise ValueError(
             f"opencode channel needs a provider-prefixed model id "
             f"in HARNESS2_IMPROVER_MODEL or HARNESS2_SOLVER_MODEL, got {model!r}"
@@ -126,7 +129,13 @@ class BenchPrompts:
                     )
 
 
-INSTALL_MODES = ("workspace_agents_md", "home_dir_jinja", "workspace_config", "codex_root")
+INSTALL_MODES = (
+    "workspace_agents_md",
+    "home_dir_jinja",
+    "workspace_config",
+    "codex_root",
+    "dsh_profile",
+)
 
 
 @dataclass(frozen=True)

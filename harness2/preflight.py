@@ -44,9 +44,8 @@ def check(adapter, *, judge=False) -> list[str]:
             return False
 
     for validate in (
-        lambda: config.validate_models(judge=judge),
+        lambda: config.validate_models(judge=judge, substrate=adapter.substrate.name),
         adapter.tasks,
-        OpencodeSubstrate().preflight,
         adapter.preflight,
     ):
         try:
@@ -57,7 +56,20 @@ def check(adapter, *, judge=False) -> list[str]:
     bench = adapter.spec.name.split("-", 1)[0]
     name = {"jb": "job-bench-eval", "lab": "harvey-labs", "wb": "workbuddy-bench"}[bench]
     repo = config.DEPENDENCIES / name
-    for dependency in (name, "opencode"):
+    needs_opencode = adapter.substrate.name == "oc" or config.DEFAULT_PROPOSER_CHANNEL == "opencode"
+    if needs_opencode:
+        try:
+            OpencodeSubstrate().preflight()
+        except (OSError, RuntimeError, ValueError) as exc:
+            errors.append(str(exc))
+    if config.DEFAULT_PROPOSER_CHANNEL == "dsh":
+        from .substrate.dsh import DshSubstrate
+
+        try:
+            DshSubstrate().preflight()
+        except (OSError, RuntimeError, ValueError) as exc:
+            errors.append(str(exc))
+    for dependency in (name, "opencode") if needs_opencode else (name,):
         target = config.DEPENDENCIES / dependency
         if (target / ".git").exists():
             try:
@@ -73,12 +85,15 @@ def check(adapter, *, judge=False) -> list[str]:
             f"{dependency} patch",
             ["git", "-C", target, "apply", "--reverse", "--check", patch],
         )
-    if not (config.OPENCODE_DIR / "node_modules").is_dir():
+    if needs_opencode and not (config.OPENCODE_DIR / "node_modules").is_dir():
         errors.append(f"OpenCode dependencies missing; run harness2-setup {bench}")
 
-    if any(
-        m.startswith("google-vertex") for m in (config.SOLVER_MODEL_OC, config.IMPROVER_MODEL)
-    ) or (judge and (bench == "wb" or config.JUDGE_MODEL.startswith(("claude", "gemini")))):
+    active_models = ([config.SOLVER_MODEL_OC] if adapter.substrate.name == "oc" else []) + (
+        [config.IMPROVER_MODEL] if config.DEFAULT_PROPOSER_CHANNEL != "dsh" else []
+    )
+    if any(m.startswith("google-vertex") for m in active_models) or (
+        judge and (bench == "wb" or config.JUDGE_MODEL.startswith(("claude", "gemini")))
+    ):
         probe(
             "Google Application Default Credentials",
             ["gcloud", "auth", "application-default", "print-access-token"],
@@ -121,23 +136,34 @@ def check(adapter, *, judge=False) -> list[str]:
                 [config.WB_RENDER_PY, "-c", "import openpyxl, pptx"],
                 remedy="install 'harness2[render]' in the main environment",
             )
+        expected_agents = (
+            "'opencode', 'oc-harness', 'codex-harness', 'dsh-harness'"
+            if adapter.substrate.name == "dsh"
+            else "'opencode', 'oc-harness', 'codex-harness'"
+        )
         probe(
             "WorkBuddy runtime",
             [
                 repo / ".venv/bin/python",
                 "-c",
                 "import harbor; from workbuddy_bench.runner.harness_adapters import HARNESS_ADAPTERS; "
-                "assert all(k in HARNESS_ADAPTERS for k in ('opencode', 'oc-harness', 'codex-harness'))",
+                f"assert all(k in HARNESS_ADAPTERS for k in ({expected_agents}))",
             ],
             cwd=repo,
         )
         for role, expected in (
-            ("solver", config.SOLVER_MODEL_OC.removeprefix("google-vertex/")),
+            (
+                "solver",
+                config.DSH_MODEL
+                if adapter.substrate.name == "dsh"
+                else config.SOLVER_MODEL_OC.removeprefix("google-vertex/"),
+            ),
             ("judge", config.JUDGE_MODEL),
         ):
             path = repo / "configs/models/harness2" / f"{role}.yaml"
             try:
-                if json.loads(path.read_text())["model"]["name"] != "google/" + expected:
+                prefix = "" if role == "solver" and adapter.substrate.name == "dsh" else "google/"
+                if json.loads(path.read_text())["model"]["name"] != prefix + expected:
                     errors.append(f"WorkBuddy {role} configuration is stale; rerun setup")
             except (OSError, ValueError, KeyError, TypeError):
                 errors.append(f"WorkBuddy {role} configuration missing; rerun setup")

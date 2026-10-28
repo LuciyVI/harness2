@@ -1,0 +1,5 @@
+harness:
+  name: dsh-harness
+  import_path: "workbuddy_bench.agents.dsh_harness_agent:DshHarnessAgent"
+  protocol: openai
+  params: {}

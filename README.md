@@ -44,8 +44,15 @@ harnesses, with gains of up to 11.5 points on WorkBuddy-Bench, 4.5 points on
 JobBench, and 11.8 percentage points on LAB's partial pass rate. Increasing the
 task-level recursion budget brings further gains.
 
-The release supports **parallel and sequential recursion**, **OpenCode and
-Codex executors**, and **JobBench, LAB, and WorkBuddy-Bench**.
+The release supports **parallel and sequential recursion**, **OpenCode, Codex,
+and DeepSeek Harness executors**, and **JobBench, LAB, and WorkBuddy-Bench**.
+
+To use an installed `dsh` as both executor and improver, see the
+[DeepSeek Harness guide](docs/DSH.md). The `harness2-dsh-demo` command runs a small
+model-backed cycle without downloading a benchmark.
+For interactive dsh chats, install the native
+[`/harness2 on|off|status` switch](docs/DSH.md#toggle-full-cycles-from-a-dsh-chat)
+with `harness2-dsh-install --profile web`.
 
 ## Video overview
 

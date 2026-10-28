@@ -1,0 +1,14 @@
+.env
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ruff_cache/
+runs/
+dependencies/dsh/
+dependencies/job-bench-eval/
+dependencies/harvey-labs/
+dependencies/workbuddy-bench/
+dependencies/opencode/
+dependencies/tools/
+dependencies/codex/

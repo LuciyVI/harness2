@@ -162,27 +162,59 @@ CODEX_CONTAINER_URL = env("HARNESS2_CODEX_CONTAINER_URL", CODEX_BASE_URL)
 VERTEX_PROXY_KEY = env("HARNESS2_CODEX_API_KEY", "")
 CODEX_HOME_DIR = DEPENDENCIES / "codex" / "home"
 
+DSH_COMMAND = env("HARNESS2_DSH_COMMAND", "dsh")
+DSH_HOME = (
+    Path(env("HARNESS2_DSH_HOME", env("DSH_HOME", Path.home() / ".dsh"))).expanduser().resolve()
+)
+DSH_PROFILE = env("HARNESS2_DSH_PROFILE", "headless")
+DSH_MODEL = env("HARNESS2_DSH_MODEL", "profile/default")
+DSH_VERSION = "0.2.0-rc.2"
+DSH_DIST = DEPENDENCIES / "dsh" / "runtime"
+DSH_PERMISSION_MODE = env("HARNESS2_DSH_PERMISSION_MODE", "workspace-write")
+DSH_PATCH = env("HARNESS2_DSH_PATCH", "")
+DSH_CONTAINER_PATCH = env("HARNESS2_DSH_CONTAINER_PATCH", "")
+DSH_CONTAINER_ALLOWED_HOSTS = tuple(
+    host.strip()
+    for host in env("HARNESS2_DSH_CONTAINER_ALLOWED_HOSTS", "host.docker.internal").split(",")
+    if host.strip()
+)
+
 WB_SOLVER_MODEL = "harness2/solver"
 WB_WEB_JUDGE = "harness2/judge"
 WB_RENDER_PY = sys.executable
 WB_OC_HARNESS_VER = "1.14.18"
 WB_CX_HARNESS_VER = CODEX_VERSION
-WB_MAX_JOBS = {"oc": 1, "cx": 1}
-WB_MAX_TRIALS = {"oc": 2, "cx": 2}
+WB_MAX_JOBS = {"oc": 1, "cx": 1, "dsh": 1}
+WB_MAX_TRIALS = {"oc": 2, "cx": 2, "dsh": 1}
 WB_MODEL_CONNECTION = "local_proxy"
 
-DEFAULT_PROPOSER_CHANNEL = "opencode"
-PROPOSER_MODEL_BY_CHANNEL = {"opencode": IMPROVER_MODEL, "claude_cli": IMPROVER_MODEL}
-PHASE_WIDTH = 2
+DEFAULT_PROPOSER_CHANNEL = env("HARNESS2_IMPROVER_CHANNEL", "opencode")
+PROPOSER_MODEL_BY_CHANNEL = {
+    "opencode": IMPROVER_MODEL,
+    "claude_cli": IMPROVER_MODEL,
+    "dsh": IMPROVER_MODEL or DSH_MODEL,
+}
+PHASE_WIDTH = env_int("HARNESS2_PHASE_WIDTH", 1 if DEFAULT_PROPOSER_CHANNEL == "dsh" else 2)
 TRANSPORT_ATTEMPTS = 2
-PROPOSER_CONCURRENCY = 2
+PROPOSER_CONCURRENCY = env_int(
+    "HARNESS2_PROPOSER_CONCURRENCY", 1 if DEFAULT_PROPOSER_CHANNEL == "dsh" else 2
+)
 
 
-def validate_models(*, judge: bool = False) -> None:
-    require("HARNESS2_SOLVER_MODEL", needed_by="executor rollouts")
-    if "/" not in SOLVER_MODEL_OC or "/" not in IMPROVER_MODEL:
-        raise ConfigError("Executor and improver models must use OpenCode's provider/model syntax")
-    if any(m.startswith("google-vertex") for m in (SOLVER_MODEL_OC, IMPROVER_MODEL)):
+def validate_models(*, judge: bool = False, substrate: str = "oc") -> None:
+    if substrate != "dsh":
+        require("HARNESS2_SOLVER_MODEL", needed_by="executor rollouts")
+        if "/" not in SOLVER_MODEL_OC:
+            raise ConfigError("Executor model must use provider/model syntax")
+    if DEFAULT_PROPOSER_CHANNEL not in PROPOSER_MODEL_BY_CHANNEL:
+        raise ConfigError("HARNESS2_IMPROVER_CHANNEL must be opencode, claude_cli, or dsh")
+    improver = PROPOSER_MODEL_BY_CHANNEL[DEFAULT_PROPOSER_CHANNEL]
+    if DEFAULT_PROPOSER_CHANNEL in ("opencode", "dsh") and "/" not in improver:
+        raise ConfigError("Improver model must use provider/model syntax")
+    active = ([SOLVER_MODEL_OC] if substrate != "dsh" else []) + (
+        [improver] if DEFAULT_PROPOSER_CHANNEL != "dsh" else []
+    )
+    if any(m.startswith("google-vertex") for m in active):
         if not VERTEX_PROJECT:
             raise ConfigError("Set GOOGLE_CLOUD_PROJECT for Vertex AI")
     if judge:

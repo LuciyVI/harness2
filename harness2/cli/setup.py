@@ -32,7 +32,7 @@ def main(argv=None):
         default=None,
         help="wb only: one subset to install; omitted installs office, web, and code",
     )
-    p.add_argument("--substrate", choices=("oc", "cx"), default="oc")
+    p.add_argument("--substrate", choices=("oc", "cx", "dsh"), default="oc")
     p.add_argument("--dry-run", action="store_true")
     args = p.parse_args(argv)
     if args.subset and args.benchmark != "wb":
@@ -51,16 +51,18 @@ def main(argv=None):
             ):
                 if not shutil.which(binary):
                     raise RuntimeError(f"Missing {binary}; see README.md")
-        install.clone("opencode", dry_run=dry)
-        install.patch("opencode", dry_run=dry)
-        install.run(
-            ["npm", "install", "--prefix", config.DEPENDENCIES / "tools", "bun@1.3.11"], dry_run=dry
-        )
-        install.run(
-            [config.BUN, "install", "--frozen-lockfile", "--ignore-scripts"],
-            cwd=config.OPENCODE_DIR,
-            dry_run=dry,
-        )
+        if args.substrate == "oc" or config.DEFAULT_PROPOSER_CHANNEL == "opencode":
+            install.clone("opencode", dry_run=dry)
+            install.patch("opencode", dry_run=dry)
+            install.run(
+                ["npm", "install", "--prefix", config.DEPENDENCIES / "tools", "bun@1.3.11"],
+                dry_run=dry,
+            )
+            install.run(
+                [config.BUN, "install", "--frozen-lockfile", "--ignore-scripts"],
+                cwd=config.OPENCODE_DIR,
+                dry_run=dry,
+            )
         install.clone(name, dry_run=dry)
         install.patch(name, dry_run=dry)
         install.overlays(name, dry_run=dry)
@@ -85,7 +87,7 @@ def main(argv=None):
                 dry_run=dry,
             )
         else:
-            install.workbuddy_models(dry_run=dry)
+            install.workbuddy_models(substrate=args.substrate, dry_run=dry)
             subsets = [args.subset] if args.subset else ["office", "web", "code"]
             install.run(
                 ["bash", "scripts/dataset/fetch-dataset.sh", *subsets], cwd=repo, dry_run=dry
@@ -106,6 +108,8 @@ def main(argv=None):
                 )
         if args.substrate == "cx":
             install.codex(dry_run=dry)
+        if args.substrate == "dsh" or config.DEFAULT_PROPOSER_CHANNEL == "dsh":
+            install.dsh(container=args.benchmark == "wb" and args.substrate == "dsh", dry_run=dry)
     except (OSError, RuntimeError, ValueError, subprocess.CalledProcessError) as exc:
         p.exit(1, f"setup failed: {exc}\n")
     print(

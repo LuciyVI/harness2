@@ -137,25 +137,35 @@ def overlays(name: str, *, dry_run=False):
             (assets / "wb_runner" / "agents", repo / "src" / "workbuddy_bench" / "agents"),
             (assets / "wb_runner" / "configs" / "harnesses", repo / "configs" / "harnesses"),
         ]
+        pairs.append(
+            (
+                config.PKG / "substrate" / "dsh_runtime.py",
+                repo / "src" / "workbuddy_bench" / "agents" / "dsh_runtime.py",
+            )
+        )
     for source, dest in pairs:
         print(f"Copy runner assets: {source} -> {dest}", flush=True)
         if not dry_run:
-            shutil.copytree(
-                source,
-                dest,
-                dirs_exist_ok=True,
-                ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "PROVENANCE.md"),
-            )
+            if source.is_file():
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, dest)
+            else:
+                shutil.copytree(
+                    source,
+                    dest,
+                    dirs_exist_ok=True,
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "PROVENANCE.md"),
+                )
 
 
-def workbuddy_models(*, dry_run=False):
+def workbuddy_models(*, substrate="oc", dry_run=False):
     """Generate the two Vertex routes from the user's model IDs, never credentials."""
     solver = config.SOLVER_MODEL_OC.removeprefix("google-vertex/")
     judge = config.JUDGE_MODEL
     problem = ""
-    if not config.SOLVER_MODEL_OC.startswith("google-vertex/gemini") or not judge.startswith(
-        "gemini"
-    ):
+    if (
+        substrate != "dsh" and not config.SOLVER_MODEL_OC.startswith("google-vertex/gemini")
+    ) or not judge.startswith("gemini"):
         problem = (
             "WorkBuddy setup requires a google-vertex/gemini... executor "
             "and a gemini... judge; choose IDs available in your project"
@@ -167,6 +177,8 @@ def workbuddy_models(*, dry_run=False):
             raise config.ConfigError(problem)
         print(f"Configure WorkBuddy solver and judge routes -- {problem}", flush=True)
         return
+    if substrate == "dsh":
+        solver = config.DSH_MODEL
     for role, model in (("solver", solver), ("judge", judge)):
         payload = {
             "model": {
@@ -182,6 +194,17 @@ def workbuddy_models(*, dry_run=False):
                 },
             }
         }
+        if substrate == "dsh" and role == "solver":
+            # The dsh agent uses its own provider. This route is metadata for WB;
+            # its proxy remains in use by the benchmark's judge only.
+            payload = {
+                "model": {
+                    "name": model,
+                    "protocols": ["openai"],
+                    "backend_url_env": "HARNESS2_DSH_UNUSED_BACKEND",
+                    "params": {},
+                }
+            }
         path = config.wb_repo() / "configs" / "models" / "harness2" / f"{role}.yaml"
         print(f"Configure WorkBuddy {role}: {model}", flush=True)
         if not dry_run:
@@ -211,6 +234,33 @@ def codex(*, dry_run=False):
             binary.unlink()
         binary.symlink_to("bin/codex")
     configure_codex(dry_run=dry_run)
+
+
+def dsh(*, container=False, dry_run=False):
+    """Reuse an existing installation; stage a separate pinned runtime for containers."""
+    from .substrate.dsh import DshSubstrate
+
+    if dry_run:
+        print(f"Check existing dsh launcher: {config.DSH_COMMAND}")
+    else:
+        DshSubstrate().preflight()
+    if container:
+        run(
+            [
+                "npm",
+                "install",
+                "--prefix",
+                config.DSH_DIST,
+                f"@deepseek-ai/dsh@{config.DSH_VERSION}",
+            ],
+            dry_run=dry_run,
+        )
+        if not dry_run:
+            node = shutil.which("node")
+            if not node:
+                raise RuntimeError("Node.js 20+ is required to stage the dsh container runtime")
+            shutil.copy2(node, config.DSH_DIST / "node")
+            _share_with_containers(config.DSH_DIST)
 
 
 def _share_with_containers(root: Path) -> None:

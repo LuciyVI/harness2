@@ -37,6 +37,7 @@ from ..core import tree as HT
 from ..core.spec import BenchPrompts, BenchSpec, resolve_channel_model
 from ..substrate.base import Install, RunRequest
 from ..substrate.codex import CODEX_SURFACE, CodexSubstrate
+from ..substrate.dsh import DshSubstrate, write_base
 from ..substrate.opencode import OPENCODE_SURFACE, OpencodeSubstrate
 from .tasks import discover, select
 
@@ -477,19 +478,23 @@ def _require_runtime_scripts() -> frozenset[str]:
 
 def lab_spec(substrate_name: str) -> BenchSpec:
     """The LAB BenchSpec for one substrate cell. A value, not a code path."""
-    if substrate_name not in ("oc", "cx"):
-        raise ValueError(f"substrate must be 'oc' or 'cx', got {substrate_name!r}")
+    if substrate_name not in ("oc", "cx", "dsh"):
+        raise ValueError(f"substrate must be oc, cx, or dsh, got {substrate_name!r}")
     channel = resolve_channel_model(None, None, effort="high")
     return BenchSpec(
         name="lab",
         runs_root=config.RUNS / "lab",
-        install_mode="workspace_config" if substrate_name == "oc" else "codex_root",
+        install_mode={"oc": "workspace_config", "cx": "codex_root", "dsh": "dsh_profile"}[
+            substrate_name
+        ],
         prompts=LAB_BASE,
         channels={"proposer": channel, "selector": channel},
         domain_word="practice area",
         leak_globs=("task.json",),
         allow_subagents=False,
-        reserved_scripts=_runtime_scripts() if substrate_name == "oc" else frozenset(),
+        reserved_scripts=(_runtime_scripts() | {"read_doc.py"})
+        if substrate_name == "dsh"
+        else (_runtime_scripts() if substrate_name == "oc" else frozenset()),
         proposer_deliverables="contents",
         obs_trunc=50_000,
     )
@@ -522,11 +527,15 @@ class LabAdapter:
             self.substrate = OpencodeSubstrate(launcher=self._launch_oc)
             self.model = model or config.SOLVER_MODEL_OC
             self._results_root = config.RUNS / "lab" / "results" / "oc"
-        else:
+        elif substrate == "cx":
             self.substrate = CodexSubstrate(launcher=self._launch_cx)
             self.model = model or config.SOLVER_MODEL_CX
 
             self._results_root = config.RUNS / "lab" / "results" / "cx"
+        else:
+            self.substrate = DshSubstrate(launcher=self._launch_dsh)
+            self.model = model or config.DSH_MODEL
+            self._results_root = config.RUNS / "lab" / "results" / "dsh"
         self.timeout = int(timeout or 3600)
         self.skill_mode = skill_mode
         self.solver_effort = solver_effort
@@ -619,7 +628,14 @@ class LabAdapter:
             out,
             run_id=run_id,
             harness_dir=harness_dir,
-            extra={"output_fingerprint": self._output_fingerprint(out)},
+            extra={
+                "output_fingerprint": self._output_fingerprint(out),
+                **(
+                    {"executor_identity": self.substrate.identity()}
+                    if self.substrate.name == "dsh"
+                    else {}
+                ),
+            },
         )
         return out
 
@@ -734,6 +750,55 @@ class LabAdapter:
             dirs.append(self._run_dir(run_id))
         return dirs
 
+    def _launch_dsh(self, req: RunRequest, install: Install) -> list[Path]:
+        dirs = []
+        for run_id in req.run_ids:
+            out = self._run_dir(run_id)
+            out.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(prefix="harness2-lab-dsh-") as temp:
+                workspace = Path(temp)
+                source = self.task_files(req.task_ref)
+                if source is not None:
+                    shutil.copytree(source, workspace / "documents")
+                (workspace / "output").mkdir()
+                prompt = (
+                    f"=== WORKSPACE ===\n{workspace}\n\n"
+                    f"=== DOCUMENTS ===\n{workspace / 'documents'}\n\n"
+                    "=== OUTPUT DIRECTORY ===\noutput/\n\n"
+                    + self.task_prompt(req.task_ref, max_chars=10**9)
+                )
+                result = self.substrate.run_session(
+                    prompt,
+                    workspace=workspace,
+                    stream_path=out / "dsh_session.jsonl",
+                    harness_dir=install.staging_dir,
+                    model=self.model,
+                    timeout=req.timeout,
+                    extra_env=_lab_env(),
+                    runtime_files={
+                        "scripts/read_doc.py": config.lab_repo()
+                        / "opencode"
+                        / "scripts"
+                        / "read_doc.py"
+                    },
+                )
+                shutil.copytree(workspace / "output", out / "output", dirs_exist_ok=True)
+                # Written last and only after successful termination; exceptions leave no marker.
+                (out / "metrics.json").write_text(
+                    json.dumps(
+                        {
+                            "task_id": req.task_ref,
+                            "model": self.model,
+                            "finished_cleanly": True,
+                            "exit_code": 0,
+                            "wall_clock_seconds": result["wall_s"],
+                            "substrate": "dsh",
+                        }
+                    )
+                )
+            dirs.append(out)
+        return dirs
+
     def _safe_rmtree(self, d: Path) -> None:
         """rm -rf restricted to this cell's results root — a guard, not a convenience."""
         d = Path(d).resolve()
@@ -749,6 +814,10 @@ class LabAdapter:
         marker = RM.read_mark(run_dir) or {}
         return (
             (run_dir / "metrics.json").is_file()
+            and (
+                self.substrate.name != "dsh"
+                or marker.get("executor_identity") == self.substrate.identity()
+            )
             and "output_fingerprint" in marker
             and marker["output_fingerprint"] == self._output_fingerprint(run_dir)
         )
@@ -759,7 +828,11 @@ class LabAdapter:
 
     def trajectory(self, run_dir: Path, *, obs_trunc: int) -> str:
         """The substrate's ONE renderer over the raw session stream, effectively uncapped."""
-        name = "opencode_session.jsonl" if self.substrate.name == "oc" else "codex_session.jsonl"
+        name = {
+            "oc": "opencode_session.jsonl",
+            "cx": "codex_session.jsonl",
+            "dsh": "dsh_session.jsonl",
+        }[self.substrate.name]
         stream = Path(run_dir) / name
         if not stream.is_file():
             return f"(no trajectory recorded for {Path(run_dir).name})"
@@ -820,6 +893,18 @@ class LabAdapter:
     def base_harness(self) -> Path:
         """The unmodified tree this cell starts from, materialised once per process and per
         pid: the domain threads of one sweep share the path."""
+        if self.substrate.name == "dsh":
+            d = self.spec.runs_root / f"_base_harness_dsh_{os.getpid()}"
+            with _BASE_LOCK:
+                if d not in _BASE_DONE:
+                    write_base(
+                        d,
+                        "Complete the task using the supplied documents. Write all "
+                        "deliverables to output/<filename>. Read binary documents using "
+                        "python3 scripts/read_doc.py <path> before drawing conclusions.",
+                    )
+                    _BASE_DONE.add(d)
+            return d
         if self.substrate.name == "oc":
             d = self.spec.runs_root / f"_base_harness_{self.skill_mode}_{os.getpid()}"
         else:
@@ -847,8 +932,14 @@ class LabAdapter:
         via scripts/read_doc.py. oc checks the RENDERED prompt, cx the AGENTS.md body."""
         if self.substrate.name == "oc":
             self._validate_oc(tree)
-        else:
+        elif self.substrate.name == "cx":
             self._validate_cx(tree)
+        else:
+            body = HT.always_on_text(self.substrate.surface(), tree)
+            if "output/" not in body or "read_doc.py" not in body:
+                raise ValueError(
+                    "dsh instructions must retain output/ and scripts/read_doc.py rules"
+                )
 
     def _validate_oc(self, tree: dict[str, str]) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -938,8 +1029,10 @@ class LabAdapter:
         if self.substrate.name == "oc":
             _require_runner(config.lab_repo() / "opencode" / "run_opencode.py")
             _require_runtime_scripts()
-        else:
+        elif self.substrate.name == "cx":
             _require_runner(config.lab_repo() / "external" / "adapt_runs_cx" / "run_codex_lab.py")
+        else:
+            _require_runner(config.lab_repo() / "opencode" / "scripts" / "read_doc.py")
         try:
             r = subprocess.run(
                 [str(config.LAB_PYTHON), "-c", "import evaluation.scoring"],
