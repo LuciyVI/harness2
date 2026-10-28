@@ -48,8 +48,11 @@ def session_status(cycle: Path, *, temp_root: Path | None = None) -> list[dict]:
             continue
         statuses = [event for event in events if event.get("type") == "status"]
         last = statuses[-1] if statuses else {}
-        reason = last.get("reason", "-")
+        terminal = last.get("reason")
+        reason = terminal or "-"
         reason = reason.get("kind", "-") if isinstance(reason, dict) else reason
+        detail = terminal.get("error") if isinstance(terminal, dict) else None
+        error = detail.get("message", "") if isinstance(detail, dict) else ""
         state = "pending"
         status_file = path.with_name(path.name.removesuffix(".headless.jsonl") + ".result.json")
         try:
@@ -65,6 +68,7 @@ def session_status(cycle: Path, *, temp_root: Path | None = None) -> list[dict]:
                 "steps": sum(event.get("phase") == "step_end" for event in statuses),
                 "phase": last.get("phase", "starting"),
                 "reason": reason,
+                "error": error,
                 "result": state,
                 "event_age_s": max(0, time.time() - modified),
                 "path": str(path),
@@ -109,6 +113,8 @@ def main(argv=None):
         print(
             f"{row['stage'][:42]:42} {row['steps']:>5}  {row['phase']:12} {str(row['reason']):14} {row['result']:10} {row['event_age_s']:>8.0f}s"
         )
+        if row["error"]:
+            print("  Error: " + " ".join(str(row["error"]).splitlines()))
     return 0
 
 

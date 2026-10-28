@@ -129,6 +129,10 @@ response or a tool; event age measures the recording, not model inactivity.
 `max-tokens` means an attempt exhausted the configured model output budget,
 even if its session wall timeout has not expired. Failed attempts and retries,
 and the terminal cycle result, are printed explicitly in the cycle log.
+The viewer includes backend error messages. Failed cycle reports preserve the
+recursion summary and execution failure reports; the chat error names the
+failed final execution and its backend cause. Progress remains in the linked
+log instead of filling the failure card with heartbeat lines.
 
 The installer adds a marked block to the profile patch and backs up the
 original with mode `0600`. It does not modify the installed npm runtime or

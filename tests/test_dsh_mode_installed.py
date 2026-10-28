@@ -19,6 +19,10 @@ from pathlib import Path
 request=json.loads(Path(sys.argv[sys.argv.index('--request')+1]).read_text())
 root=Path(request['output'])
 root.mkdir(parents=True)
+if os.environ.get('TEST_HARNESS2_WORKER_FAIL') == '1':
+ for _ in range(300): print('  [dsh agg1] 30s; completed steps=1; step_start', file=sys.stderr, flush=True)
+ (root/'result.json').write_text(json.dumps({'ok':False,'error':'agg1: 500: cuda prefill state reset failed'}))
+ sys.exit(1)
 harness=root/'selected-harness'
 (harness/'tool_descriptions').mkdir(parents=True)
 for name in ['systemprompt.md','guardrails.md','LongTermMEMORY.md','tool_descriptions/tool_guidance.md']:
@@ -129,7 +133,12 @@ class InstalledDshModeTests(unittest.TestCase):
             driver = root / "driver.mjs"
             driver.write_text(DRIVER)
             for index, commands in enumerate(
-                (["on", "status"], ["on", "off", "invalid", "status"], ["on", "status"])
+                (
+                    ["on", "status"],
+                    ["on", "off", "invalid", "status"],
+                    ["on", "status"],
+                    ["on", "status"],
+                )
             ):
                 with self.subTest(commands=commands):
                     if index == 2:
@@ -139,6 +148,14 @@ class InstalledDshModeTests(unittest.TestCase):
                             state=plugin,
                             command=command,
                             python=sys.executable,
+                        )
+                    elif index == 3:
+                        install(
+                            home=home,
+                            profile="headless",
+                            state=plugin,
+                            command=command,
+                            python=str(worker),
                         )
                     state = root / f"state{index}"
                     overrides = prepare_session(
@@ -175,7 +192,9 @@ class InstalledDshModeTests(unittest.TestCase):
                         "DSH_PERMISSION_MODE": "workspace-write",
                         "DSH_TOOLS_MODE": "native",
                         "TEST_DSH_MODE_KEY": "test-only",
+                        "TEST_HARNESS2_WORKER_FAIL": "1" if index == 3 else "0",
                     }
+                    requests_before = len(requests)
                     result = subprocess.run(
                         [
                             *command_argv(command),
@@ -196,6 +215,23 @@ class InstalledDshModeTests(unittest.TestCase):
                     )
                     projection = root / f"headless{index}.jsonl"
                     projection.write_text(result.stdout)
+                    if index == 3:
+                        failed = outcome(projection, result.returncode)
+                        self.assertFalse(failed["ok"])
+                        error = json.dumps(failed["reason"])
+                        self.assertIn("cuda prefill state reset failed", error)
+                        self.assertIn("progress log:", error)
+                        self.assertNotIn("completed steps=", error)
+                        self.assertEqual(len(requests), requests_before)
+                        failed_report = next(
+                            path
+                            for path in (plugin / "cycles").glob("*/result.json")
+                            if json.loads(path.read_text()).get("ok") is False
+                        )
+                        self.assertIn(
+                            "completed steps=", failed_report.parent.with_suffix(".log").read_text()
+                        )
+                        continue
                     self.assertTrue(
                         outcome(projection, result.returncode)["ok"],
                         result.stderr[-7000:] + result.stdout[-3000:],
@@ -232,7 +268,7 @@ class InstalledDshModeTests(unittest.TestCase):
                         )
                         self.assertTrue((Path(report["harness"]) / "systemprompt.md").is_file())
                         self.assertGreaterEqual(len(requests), 7)
-            self.assertEqual(len(list((plugin / "cycles").glob("*.request.json"))), 2)
+            self.assertEqual(len(list((plugin / "cycles").glob("*.request.json"))), 3)
 
 
 if __name__ == "__main__":

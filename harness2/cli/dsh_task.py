@@ -13,7 +13,7 @@ from .. import config
 from ..core.library import Library
 from ..core.proposer import Proposer
 from ..core.schedule import run_task
-from ..dsh_task import DshTaskAdapter, selected_result, snapshot
+from ..dsh_task import DshCycleError, DshTaskAdapter, selected_result, snapshot
 from ..snapshot import SnapshotError
 from ..substrate import dsh_runtime
 
@@ -80,6 +80,8 @@ def main(argv=None):
         report = selected_result(adapter, result, k)
     except Exception as exc:
         report.update(error=f"{type(exc).__name__}: {exc}")
+        if isinstance(exc, DshCycleError):
+            report.update(status="cycle-failed", summary=exc.summary, failures=exc.failures)
         if isinstance(exc, SnapshotError):
             path = root / "snapshot.json"
             path.write_text(json.dumps(exc.manifest, indent=2) + "\n")

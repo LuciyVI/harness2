@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import difflib
+import json
 import shutil
 from pathlib import Path
 
@@ -11,6 +12,37 @@ from .core import runmark, tree
 from .core.spec import BenchPrompts, BenchSpec, ChannelSpec
 from .snapshot import snapshot as snapshot
 from .substrate.dsh import DSH_SURFACE, DshSubstrate, write_base
+
+
+class DshCycleError(RuntimeError):
+    """A failed full cycle retains its summary and execution failure causes."""
+
+    def __init__(self, root: Path, result):
+        self.summary = result.to_dict()
+        self.failures = []
+        finals = {label for mode in result.modes.values() for label in mode.get("finals", [])}
+        for path in sorted(root.glob("executions/*/*/*/dsh_session.result.json")):
+            try:
+                record = json.loads(path.read_text())
+            except (OSError, ValueError):
+                continue
+            if not isinstance(record, dict) or record.get("ok") is not False:
+                continue
+            reason = record.get("reason")
+            detail = reason.get("error") if isinstance(reason, dict) else None
+            message = detail.get("message") if isinstance(detail, dict) else None
+            self.failures.append(
+                {
+                    "stage": path.parent.name,
+                    "reason": reason.get("kind") if isinstance(reason, dict) else reason,
+                    "error": message or record.get("error") or record.get("status", "failed"),
+                    "report": str(path),
+                }
+            )
+        preferred = [failure for failure in self.failures if failure["stage"] in finals]
+        primary = (preferred or self.failures)[-1] if self.failures else None
+        cause = f"{primary['stage']}: {primary['reason']}: {primary['error']}; " if primary else ""
+        super().__init__("Harness² cycle failed: " + cause + "; ".join(result.errors))
 
 
 def changes(source: Path, workspace: Path) -> str:
@@ -140,7 +172,7 @@ class DshTaskAdapter:
 def selected_result(adapter, result, k):
     selected = result.selections.get("agg") or {}
     if result.status != "ok" or not selected.get("ok"):
-        raise RuntimeError("Harness² cycle failed: " + "; ".join(result.errors))
+        raise DshCycleError(adapter.root, result)
     from .core.schedule import Namespace
 
     task = Namespace(adapter.spec.name, "dsh", "agg", k, None, "").task_dir(

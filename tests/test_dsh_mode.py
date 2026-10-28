@@ -1,5 +1,7 @@
 """Interactive dsh mode: project copies, real recursion and managed installation."""
 
+import contextlib
+import io
 import json
 import os
 import shlex
@@ -13,6 +15,7 @@ from unittest.mock import patch
 
 from harness2 import config
 from harness2.cli.dsh_install import BEGIN, END, install
+from harness2.cli.dsh_task import main as run_worker
 from harness2.core.proposer import Proposer, Reply
 from harness2.core.schedule import run_task
 from harness2.dsh_task import DshTaskAdapter, selected_result, snapshot
@@ -21,6 +24,12 @@ FAKE_SOLVER = r"""
 import json, os, sys
 from pathlib import Path
 sys.stdin.read()
+if os.environ.get('TEST_FAIL_FINAL') == '1' and Path.cwd().parent.name == 'agg1':
+ reason={'kind':'error','error':{'message':'500: cuda prefill state reset failed','code':'INVALID_REQUEST'}}
+ Path(os.environ['HARNESS2_DSH_EVENTS']).write_text(json.dumps({'sessionId':'failed-final','type':'turn/end','data':{'reason':reason}})+'\n')
+ print(json.dumps({'type':'session','sessionId':'failed-final'}))
+ print(json.dumps({'type':'status','phase':'turn_end','reason':reason}))
+ sys.exit(1)
 overlay=json.loads(Path(sys.argv[sys.argv.index('--patch')+1]).read_text())
 instructions=next(row['insert'][0]['config']['text'] for row in overlay if row.get('insert'))
 if 'IMPROVED_GUIDANCE' in instructions:
@@ -94,6 +103,58 @@ class DshModeTests(unittest.TestCase):
             "IMPROVED_GUIDANCE", (Path(selected["harness"]) / "systemprompt.md").read_text()
         )
         self.assertIn("+fixed", Path(selected["changes"]).read_text())
+
+    def test_failed_final_keeps_backend_cause_and_summary_without_adopting_a_base(self):
+        project = self.root / "project"
+        project.mkdir()
+        (project / "app.txt").write_text("original\n")
+        home = self.root / "home"
+        (home / "profiles/headless").mkdir(parents=True)
+        solver = self.root / "solver.py"
+        solver.write_text(FAKE_SOLVER)
+        output = self.root / "failed-cycle"
+        request = self.root / "request.json"
+        request.write_text(
+            json.dumps(
+                {
+                    "workspace": str(project),
+                    "output": str(output),
+                    "prompt": "Fix app.txt",
+                    "timeout": 10,
+                }
+            )
+        )
+        messages = io.StringIO()
+        with (
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(messages),
+            patch.dict(os.environ, {"TEST_FAIL_FINAL": "1"}),
+            patch.multiple(
+                config,
+                DSH_HOME=home,
+                DSH_PROFILE="headless",
+                DSH_COMMAND=shlex.join([sys.executable, str(solver)]),
+                DSH_MODEL="local/test",
+                DSH_PATCH="",
+                DSH_CONTAINER_PATCH="",
+                PHASE_WIDTH=config.PHASE_WIDTH,
+                PROPOSER_CONCURRENCY=config.PROPOSER_CONCURRENCY,
+            ),
+            patch("harness2.cli.dsh_task.Proposer", Editor),
+        ):
+            code = run_worker(["--request", str(request)])
+        self.assertEqual(code, 1)
+        report = json.loads((output / "result.json").read_text())
+        self.assertFalse(report["ok"])
+        self.assertEqual(report["status"], "cycle-failed")
+        self.assertIn("agg1: error: 500: cuda prefill state reset failed", report["error"])
+        self.assertIn("finals-only", report["error"])
+        self.assertIn("cuda prefill state reset failed", messages.getvalue())
+        self.assertTrue(report["summary"]["base"])
+        self.assertEqual(report["failures"][0]["stage"], "agg1")
+        self.assertTrue(Path(report["failures"][0]["report"]).is_file())
+        self.assertFalse((output / "selected-harness").exists())
+        self.assertEqual((project / "app.txt").read_text(), "original\n")
 
     def test_snapshot_excludes_runtime_dirs_and_refuses_external_links_and_large_projects(self):
         project = self.root / "project"

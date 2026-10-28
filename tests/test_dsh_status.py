@@ -55,6 +55,31 @@ class DshStatusTests(unittest.TestCase):
             self.assertEqual(rows[0]["result"], "ok")
             self.assertEqual(rows[0]["reason"], "completed")
 
+    def test_backend_error_message_is_visible_without_model_or_tool_payloads(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            cycle = Path(temporary)
+            run = cycle / "executions/namespace/task/agg1"
+            run.mkdir(parents=True)
+            events = [
+                {"type": "text", "text": "PRIVATE_MODEL_PAYLOAD"},
+                {
+                    "type": "status",
+                    "phase": "turn_end",
+                    "reason": {
+                        "kind": "error",
+                        "error": {
+                            "message": "cuda prefill state reset failed",
+                            "code": "INVALID_REQUEST",
+                        },
+                    },
+                },
+            ]
+            (run / "dsh_session.headless.jsonl").write_text("\n".join(map(json.dumps, events)))
+            row = session_status(cycle)[0]
+            self.assertEqual(row["reason"], "error")
+            self.assertEqual(row["error"], "cuda prefill state reset failed")
+            self.assertNotIn("PRIVATE_MODEL_PAYLOAD", json.dumps(row))
+
     def test_latest_cycle_uses_request_creation_not_the_heartbeat_of_an_older_run(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

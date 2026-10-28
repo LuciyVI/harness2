@@ -83,7 +83,10 @@ export function runWorker(config, request, env, signal) {
       if (signal.aborted) return reject(new Error(`Harness² cancelled; artifacts: ${output}`));
       try {
         const result = JSON.parse(readFileSync(join(output, 'result.json'), 'utf8'));
-        if (code !== 0 || !result.ok) throw new Error(result.error || `worker exit ${code}`);
+        if (code !== 0 || result?.ok !== true) {
+          reject(new Error(`${result?.error || `worker exit ${code} without a successful result`}; artifacts: ${output}; progress log: ${output}.log`));
+          return;
+        }
         accept(result);
       } catch (error) {
         reject(new Error(`${error.message}; artifacts: ${output}\n${errors}`));
