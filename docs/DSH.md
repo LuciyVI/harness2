@@ -74,10 +74,24 @@ fork inherits the selection recorded in its history.
 With the mode on, each new text task starts the actual Harness² recursion
 before dsh's next model request: baseline execution, invariant/domain edits
 and probes, composition, final execution and experience reflection. The
-default is parallel recursion with `k=1` and a **3600-second limit per
+default is parallel recursion with `k=1` and a **10800-second limit per
 session**; the whole cycle can take longer. At `k=1` the single composed final
 is adopted without a separate comparison call. This does not establish that
 the result is better than the baseline.
+
+Use `harness2-dsh-install --profile web --timeout 10800` to configure the
+controller's per-session deadline. Each new Python cycle worker also reads
+`HARNESS2_DSH_SESSION_TIMEOUT`; this operator override takes precedence over
+the controller, including an already loaded controller with an older limit.
+For an editable installation, edit this checkout's `.env` to apply the override
+to new workers without restarting the web interface. Shell values take
+precedence over `.env`. The effective limit and its source are recorded in the
+cycle log and `result.json` under `settings`.
+
+The limit includes model queue waits, prefill, generation and tools. Competing
+clients on a shared backend can consume it while dsh waits. The limit remains
+finite; expiration records `wall-timeout`, stops owned processes and preserves
+the incomplete workspace. It never adopts a partial result or replays the task.
 
 Trial executions use copies of the chat's project directory. The chosen
 response, file changes and harness return to the ordinary dsh agent, which

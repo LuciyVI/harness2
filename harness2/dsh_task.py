@@ -89,7 +89,7 @@ def changes(source: Path, workspace: Path) -> str:
 
 
 class DshTaskAdapter:
-    def __init__(self, root: Path, prompt: str, *, timeout=3600, base_harness=None):
+    def __init__(self, root: Path, prompt: str, *, timeout=10800, base_harness=None):
         self.root, self.prompt, self.timeout = root, prompt, timeout
         self.substrate = DshSubstrate(progress=True)
         channel = ChannelSpec("dsh", config.DSH_MODEL, timeout=timeout, progress=True)

@@ -10,6 +10,21 @@ from harness2.cli.dsh_status import latest_cycle, session_status
 
 
 class DshStatusTests(unittest.TestCase):
+    def test_legacy_session_timeout_is_terminal_even_without_a_native_turn_end(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            cycle = Path(temporary)
+            run = cycle / "executions/namespace/task/base1"
+            run.mkdir(parents=True)
+            (run / "dsh_session.headless.jsonl").write_text(
+                json.dumps({"type": "status", "phase": "step_start", "step": 20}) + "\n"
+            )
+            (run / "dsh_session.result.json").write_text(
+                json.dumps({"ok": False, "status": "timeout", "timeout_s": 3600})
+            )
+            row = session_status(cycle)[0]
+            self.assertEqual(row["reason"], "wall-timeout")
+            self.assertEqual(row["result"], "timeout")
+
     def test_legacy_token_limit_and_current_probe_are_reported_without_payloads(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

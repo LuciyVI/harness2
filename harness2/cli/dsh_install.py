@@ -28,7 +28,10 @@ def install(
     python: str,
     uninstall=False,
     plugin_source: Path | None = None,
+    timeout: int = 10800,
 ):
+    if type(timeout) is not int or timeout < 1:
+        raise ValueError("timeout must be a positive integer")
     if not profile or profile in (".", "..") or any(c in profile for c in "/\\"):
         raise ValueError("profile must be a profile name")
     patch = home / "profiles" / profile / "cordis.patch.yml"
@@ -81,7 +84,7 @@ def install(
                             "sourceHome": str(home),
                             "sourceProfile": profile,
                             "outputRoot": str(state / "cycles"),
-                            "timeout": 3600,
+                            "timeout": timeout,
                             "k": 1,
                         },
                     }
@@ -158,6 +161,9 @@ def main(argv=None):
     parser.add_argument("--state", type=Path, default=config.RUNS / "dsh-mode")
     parser.add_argument("--uninstall", action="store_true")
     parser.add_argument(
+        "--timeout", type=int, default=10800, help="Seconds per child dsh session (default: 10800)"
+    )
+    parser.add_argument(
         "--plugin-source", type=Path, help="Use a bridge from a dsh source checkout"
     )
     args = parser.parse_args(argv)
@@ -169,6 +175,7 @@ def main(argv=None):
         python=sys.executable,
         uninstall=args.uninstall,
         plugin_source=args.plugin_source.expanduser().resolve() if args.plugin_source else None,
+        timeout=args.timeout,
     )
     print(json.dumps(result, indent=2))
     return 0

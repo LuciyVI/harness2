@@ -253,6 +253,7 @@ class DshSubstrate:
                         {
                             "ok": False,
                             "status": "timeout",
+                            "reason": {"kind": "wall-timeout"},
                             "timeout_s": timeout,
                             "wall_s": round(time.monotonic() - started, 3),
                             "error": error,
@@ -266,6 +267,7 @@ class DshSubstrate:
                 notice(f"failed; wall timeout after {timeout}s; report={status_path}")
                 raise RuntimeError(error) from None
         result = runtime.outcome(projection, rc)
+        result["timeout_s"] = timeout
         result["wall_s"] = round(time.monotonic() - started, 3)
         if not result["ok"]:
             reason = result["reason"]

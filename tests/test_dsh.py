@@ -422,6 +422,7 @@ class DshTests(unittest.TestCase):
         self.assertEqual((run_dir / "workspace/answer.txt").read_text(), "Total: 105.25\n")
         status = json.loads((run_dir / "dsh_session.result.json").read_text())
         self.assertEqual(status["status"], "timeout")
+        self.assertEqual(status["reason"], {"kind": "wall-timeout"})
         self.assertFalse(status["ok"])
         self.assertFalse((run_dir / ".adapt_complete").exists())
         preserved = list((adapter.root / "failed_attempts").glob("*/workspace/answer.txt"))

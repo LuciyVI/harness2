@@ -16,6 +16,7 @@ from unittest.mock import patch
 from harness2 import config
 from harness2.cli.dsh_install import BEGIN, END, install
 from harness2.cli.dsh_task import main as run_worker
+from harness2.cli.dsh_task import session_timeout
 from harness2.core.proposer import Proposer, Reply
 from harness2.core.schedule import run_task
 from harness2.dsh_task import DshTaskAdapter, selected_result, snapshot
@@ -76,6 +77,34 @@ class DshModeTests(unittest.TestCase):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
+
+    def test_session_budget_override_applies_to_an_existing_hour_controller(self):
+        with patch.dict(os.environ):
+            os.environ.pop("HARNESS2_DSH_SESSION_TIMEOUT", None)
+            self.assertEqual(session_timeout({}), (10800, "default"))
+            self.assertEqual(session_timeout({"timeout": 120}), (120, "request"))
+            os.environ["HARNESS2_DSH_SESSION_TIMEOUT"] = "10800"
+            self.assertEqual(
+                session_timeout({"timeout": 3600}),
+                (10800, "HARNESS2_DSH_SESSION_TIMEOUT"),
+            )
+
+    def test_session_budget_rejects_unbounded_or_invalid_configuration(self):
+        with patch.dict(os.environ):
+            os.environ.pop("HARNESS2_DSH_SESSION_TIMEOUT", None)
+            for value in (0, -1, 1.5, True, "120", None):
+                with (
+                    self.subTest(request_timeout=value),
+                    self.assertRaisesRegex(ValueError, "positive integer"),
+                ):
+                    session_timeout({"timeout": value})
+            for value in ("0", "-1", "1.5", "invalid"):
+                os.environ["HARNESS2_DSH_SESSION_TIMEOUT"] = value
+                with (
+                    self.subTest(environment_timeout=value),
+                    self.assertRaisesRegex(ValueError, "positive integer"),
+                ):
+                    session_timeout({"timeout": 3600})
 
     def test_complete_cycle_selects_result_without_touching_live_project(self):
         project = self.root / "project"
@@ -346,11 +375,21 @@ class DshModeTests(unittest.TestCase):
         )
         install(**args)
         installed = document.read_text()
+        self.assertIn('"timeout": 10800', installed)
         self.assertIn(original, installed)
         self.assertEqual(installed.count(BEGIN), 1)
         install(**args)
         self.assertEqual(document.read_text(), installed)
         self.assertEqual(document.stat().st_mode & 0o777, 0o600)
+        for invalid in (0, -1, 1.5, True):
+            with self.subTest(timeout=invalid), self.assertRaisesRegex(ValueError, "positive"):
+                install(**args, timeout=invalid)
+            self.assertEqual(document.read_text(), installed)
+        install(**args, timeout=120)
+        configured = document.read_text()
+        self.assertIn('"timeout": 120', configured)
+        install(**args, timeout=120)
+        self.assertEqual(document.read_text(), configured)
         install(**args, uninstall=True)
         self.assertEqual(document.read_text().strip(), original.strip())
         self.assertNotIn(END, document.read_text())

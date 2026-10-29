@@ -18,6 +18,23 @@ from ..snapshot import SnapshotError
 from ..substrate import dsh_runtime
 
 
+def session_timeout(request: dict) -> tuple[int, str]:
+    """Resolve a finite session budget; the worker environment overrides its controller."""
+    override = config.env("HARNESS2_DSH_SESSION_TIMEOUT")
+    source = (
+        "HARNESS2_DSH_SESSION_TIMEOUT"
+        if override is not None
+        else ("request" if "timeout" in request else "default")
+    )
+    try:
+        seconds = int(override) if override is not None else request.get("timeout", 10800)
+    except ValueError:
+        raise ValueError("HARNESS2_DSH_SESSION_TIMEOUT must be a positive integer") from None
+    if type(seconds) is not int or seconds < 1:
+        raise ValueError("Session timeout must be a positive integer")
+    return seconds, source
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -38,14 +55,22 @@ def main(argv=None):
 
     previous = {s: signal.signal(s, stop) for s in (signal.SIGTERM, signal.SIGINT)}
     report = {"ok": False, "output": str(root)}
+    settings = None
     started = time.monotonic()
     try:
         prompt = request["prompt"]
         if not isinstance(prompt, str) or not prompt.strip():
             raise ValueError("prompt must be non-empty text")
-        k, timeout = int(request.get("k", 1)), int(request.get("timeout", 3600))
-        if k < 1 or timeout < 1:
-            raise ValueError("k and timeout must be positive")
+        k = int(request.get("k", 1))
+        timeout, timeout_source = session_timeout(request)
+        settings = {"session_timeout_s": timeout, "timeout_source": timeout_source}
+        if k < 1:
+            raise ValueError("k must be positive")
+        print(
+            f"[harness2] session timeout={timeout}s; source={timeout_source}",
+            file=sys.stderr,
+            flush=True,
+        )
         config.PHASE_WIDTH = 1
         config.PROPOSER_CONCURRENCY = 1
         source = Path(request["workspace"]).expanduser().resolve()
@@ -88,6 +113,8 @@ def main(argv=None):
             report.update(status="snapshot-failed", snapshot=str(path))
             report["error"] += f"; snapshot report: {path}"
     finally:
+        if settings is not None:
+            report["settings"] = settings
         if cancelled:
             report.update(ok=False, error="Harness² cycle cancelled", cancelled=True)
         (root / "result.json").write_text(json.dumps(report, indent=2) + "\n")

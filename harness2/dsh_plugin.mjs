@@ -15,7 +15,7 @@ export const Config = z.object({
   sourceHome: z.string().required(),
   sourceProfile: z.string().default('web'),
   outputRoot: z.string().required().description('Cycle artifacts directory'),
-  timeout: z.number().step(1).min(1).default(3600).description('Seconds per dsh session'),
+  timeout: z.number().step(1).min(1).default(10800).description('Seconds per dsh session, including model queue waits'),
   k: z.number().step(1).min(1).default(1),
   snapshotMaxBytes: z.number().step(1).min(1).default(100000000).description('Maximum selected snapshot bytes'),
   snapshotMaxFiles: z.number().step(1).min(1).default(10000).description('Maximum selected snapshot files and links'),

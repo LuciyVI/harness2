@@ -58,6 +58,13 @@ def session_status(cycle: Path, *, temp_root: Path | None = None) -> list[dict]:
         try:
             record = json.loads(status_file.read_text())
             state = "ok" if record.get("ok") is True else record.get("status", "failed")
+            if not terminal:
+                stored_reason = record.get("reason")
+                reason = (
+                    stored_reason.get("kind", "-")
+                    if isinstance(stored_reason, dict)
+                    else stored_reason or ("wall-timeout" if state == "timeout" else "-")
+                )
             error = error or record.get("error", "")
             if reason == "max-tokens" and not error:
                 session = next(
