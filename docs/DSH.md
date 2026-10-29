@@ -134,12 +134,17 @@ recursion summary and execution failure reports; the chat error names the
 failed final execution and its backend cause. Progress remains in the linked
 log instead of filling the failure card with heartbeat lines.
 
-Project-copy executions request a final chat reply under 200 words with the
-outcome, verification status, limitations and relative artifact paths. The
-complete deliverable and detailed evidence belong in workspace files. This
-reporting instruction accompanies every baseline and refined execution,
-including custom harnesses. It is guidance to the model; output budgets remain
-unchanged and a `max-tokens` termination still fails the execution.
+Project-copy executions finish through the native `harness2_finish` tool,
+which concludes the turn without a further model reply. Write the complete
+deliverable and verification report in workspace files, then submit a brief
+truthful `summary` and a relative `report_path`. The summary limit is
+`HARNESS2_DSH_HANDOFF_MAX_CHARS` (default 2000 Unicode characters). The tool
+requires an existing nonempty regular report inside the workspace and rejects
+symbolic links and outside paths. Later tool calls are blocked after the
+successful handoff. Baseline, refined and custom harness executions require a
+recorded successful handoff, completed durable turn and zero process exit.
+Plain final text and `max-tokens` terminations remain failures. Output token
+budgets remain unchanged.
 
 The installer adds a marked block to the profile patch and backs up the
 original with mode `0600`. It does not modify the installed npm runtime or

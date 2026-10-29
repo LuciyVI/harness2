@@ -33,6 +33,7 @@ def cancel_processes() -> None:
             except ProcessLookupError:
                 pass
 
+
 APP_BUNDLES = {
     "@deepseek-ai/dsh-web-app",
     "@deepseek-ai/dsh-headless",
@@ -44,14 +45,73 @@ APP_BUNDLES = {
 # Record the durable events before headless's 8 KiB projection truncates tool results.
 # The harness contribution deliberately disables template interpolation: code and
 # documents may contain literal {{braces}}.
-BRIDGE = """import { appendFileSync } from 'node:fs';
+BRIDGE = """import { appendFileSync, lstatSync } from 'node:fs';
+import { resolve, relative, isAbsolute, sep } from 'node:path';
 export default function harness2(ctx, config) {
   ctx.inject(['systemPrompt'], child => {
     child.systemPrompt.section({name: 'harness2:instructions', order: 10210,
       text: config.text || '', interpolate: false});
   });
-  if (config.tools) ctx.on('agent/created', ({agent}) => {
-    agent.ctx.tools.restrict({allow: config.tools});
+  ctx.on('agent/created', ({agent}) => {
+    if (config.tools) agent.ctx.tools.restrict({allow: config.handoffMaxChars
+      ? [...config.tools, 'harness2_finish'] : config.tools});
+    if (!config.handoffMaxChars) return;
+    let closed = false;
+    let pending;
+    agent.ctx.on('tools/result', (exec, result) => {
+      if (exec.callId !== pending) return;
+      pending = undefined;
+      if (!result.isError && result.concludesTurn === true) closed = true;
+    });
+    agent.ctx.on('tools/pre-execute', (exec, next) => {
+      if (closed) throw new Error('This task already submitted its final handoff.');
+      return next();
+    });
+    agent.ctx.tools.register({
+      name: 'harness2_finish',
+      description: 'Finish this project-copy task. Save the complete deliverable and verification '
+        + 'report in a workspace file first, then call this tool with a short truthful summary '
+        + 'and its relative report path. This ends the turn; do not write a final chat essay.',
+      parameters: {type: 'object', additionalProperties: false,
+        properties: {
+          summary: {type: 'string', description: `Outcome, verification and limitations; at most ${config.handoffMaxChars} characters.`},
+          report_path: {type: 'string', description: 'Relative path of the existing full report in this workspace; no symbolic links.'},
+        }, required: ['summary', 'report_path']},
+      output: {
+        schema: {type: 'object', additionalProperties: false,
+          properties: {version: {type: 'integer'}, summary: {type: 'string'}, report_path: {type: 'string'}},
+          required: ['version', 'summary', 'report_path']},
+        render: (_args, value) => [{type: 'text', text: JSON.stringify(value)}],
+      },
+      async execute(args, exec) {
+        if (!args || typeof args !== 'object' || Array.isArray(args)
+          || Object.keys(args).sort().join(',') !== 'report_path,summary'
+          || typeof args.summary !== 'string' || !args.summary.trim()
+          || Array.from(args.summary).length > config.handoffMaxChars
+          || typeof args.report_path !== 'string' || !args.report_path.trim()) {
+          throw new Error(`Provide a nonempty summary of at most ${config.handoffMaxChars} characters and a report_path.`);
+        }
+        const cwd = exec.agent?.session.header.cwd;
+        if (!cwd || isAbsolute(args.report_path)) throw new Error('report_path must be relative to the task workspace.');
+        const target = resolve(cwd, args.report_path);
+        const rel = relative(cwd, target);
+        if (!rel || rel === '..' || rel.startsWith('..' + sep) || isAbsolute(rel)) {
+          throw new Error('report_path must remain inside the task workspace.');
+        }
+        let current = cwd;
+        let info;
+        for (const part of rel.split(sep)) {
+          current = resolve(current, part);
+          info = lstatSync(current);
+          if (info.isSymbolicLink()) throw new Error('report_path cannot contain symbolic links.');
+        }
+        if (!info.isFile() || info.size === 0) throw new Error('The full report must be an existing nonempty regular file.');
+        exec.signal.throwIfAborted();
+        exec.concludeTurn();
+        pending = exec.callId;
+        return {version: 1, summary: args.summary, report_path: rel};
+      },
+    });
   });
   ctx.on('session/event', (session, event) => {
     appendFileSync(process.env.HARNESS2_DSH_EVENTS,
@@ -116,6 +176,7 @@ def prepare_session(
     copy_plugins: bool = False,
     patch_files: tuple[Path, ...] = (),
     tools: tuple[str, ...] | None = None,
+    handoff_max_chars: int | None = None,
 ) -> dict[str, str]:
     """Create a private base+headless profile, retaining source provider/plugin patches.
 
@@ -123,6 +184,10 @@ def prepare_session(
     UI-specific overrides in a web profile must be removed in the source profile
     chosen for automation; required plugin failures remain fatal.
     """
+    if handoff_max_chars is not None and (
+        type(handoff_max_chars) is not int or handoff_max_chars < 1
+    ):
+        raise ValueError("handoff_max_chars must be a positive integer")
     if (
         not source_profile
         or source_profile in (".", "..")
@@ -195,6 +260,7 @@ def prepare_session(
                     "config": {
                         "text": text,
                         **({"tools": list(tools)} if tools is not None else {}),
+                        **({"handoffMaxChars": handoff_max_chars} if handoff_max_chars else {}),
                     },
                 }
             ]
@@ -274,6 +340,72 @@ def durable_complete(path: Path, session_id: str) -> bool:
         if event.get("sessionId") == session_id and event.get("type") == "turn/end":
             last = (event.get("data") or {}).get("reason")
     return isinstance(last, dict) and last.get("kind") == "completed"
+
+
+def final_handoff(path: Path, workspace: Path, session_id: str, max_chars: int) -> dict:
+    """Read a successfully committed final tool result, never partial assistant text."""
+    calls = {}
+    handoff = None
+    completed = False
+    for event in read_events(path):
+        if event.get("sessionId") != session_id:
+            continue
+        data = event.get("data")
+        if not isinstance(data, dict):
+            continue
+        if event.get("type") == "turn/start":
+            calls, handoff, completed = {}, None, False
+        elif event.get("type") == "turn/end":
+            reason = data.get("reason")
+            completed = isinstance(reason, dict) and reason.get("kind") == "completed"
+        elif event.get("type") == "tool/call" and data.get("name") == "harness2_finish":
+            calls[data.get("callId")] = True
+        elif event.get("type") == "tool/result":
+            message = data.get("message") or {}
+            if not isinstance(message, dict):
+                continue
+            if message.get("toolCallId") not in calls or message.get("isError") is not False:
+                continue
+            content = message.get("content", [])
+            if (
+                not isinstance(content, list)
+                or len(content) != 1
+                or not isinstance(content[0], dict)
+                or content[0].get("type") != "text"
+            ):
+                continue
+            try:
+                value = json.loads(content[0].get("text", ""))
+            except (ValueError, TypeError):
+                continue
+            if isinstance(value, dict) and set(value) == {"version", "summary", "report_path"}:
+                handoff = value
+    if handoff is None or not completed:
+        raise RuntimeError(
+            "Missing successful harness2_finish handoff; plain final text is not a completed project-copy result"
+        )
+    summary, report = handoff["summary"], handoff["report_path"]
+    if (
+        type(handoff["version"]) is not int
+        or handoff["version"] != 1
+        or not isinstance(summary, str)
+        or not summary.strip()
+        or len(summary) > max_chars
+        or not isinstance(report, str)
+        or not report.strip()
+    ):
+        raise RuntimeError("Invalid harness2_finish handoff")
+    relative = Path(report)
+    if relative.is_absolute() or ".." in relative.parts:
+        raise RuntimeError("Handoff report must remain inside the task workspace")
+    target = workspace
+    for part in relative.parts:
+        target = target / part
+        if target.is_symlink():
+            raise RuntimeError("Handoff report cannot contain symbolic links")
+    if not target.is_file() or not target.stat().st_size:
+        raise RuntimeError("Handoff report is missing or empty")
+    return handoff
 
 
 def run_process(

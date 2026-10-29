@@ -37,12 +37,18 @@ if 'IMPROVED_GUIDANCE' in instructions:
  Path('app.txt').write_text('fixed\n')
 reply='Task result'
 if os.environ.get('TEST_LONG_REPORT') == '1':
- if 'Final response format for this project-copy execution:' not in instructions:
+ if 'Completion protocol for this project-copy execution:' not in instructions:
   raise SystemExit('Missing concise final response instructions')
  Path('report.txt').write_text('verification evidence\n'*4000)
  reply='Task result. Detailed verification: report.txt.'
 events=Path(os.environ['HARNESS2_DSH_EVENTS'])
-events.write_text(json.dumps({'sessionId':'native-test','type':'turn/end','data':{'reason':{'kind':'completed'}}})+'\n')
+report='report.txt' if os.environ.get('TEST_LONG_REPORT') == '1' else 'task-report.md'
+if not Path(report).exists(): Path(report).write_text('Fixture verification report.\n')
+handoff={'version':1,'summary':reply,'report_path':report}
+durable=[{'sessionId':'native-test','type':'tool/call','data':{'name':'harness2_finish','callId':'finish'}},
+ {'sessionId':'native-test','type':'tool/result','data':{'message':{'toolCallId':'finish','isError':False,'content':[{'type':'text','text':json.dumps(handoff)}]}}},
+ {'sessionId':'native-test','type':'turn/end','data':{'reason':{'kind':'completed'}}}]
+events.write_text('\n'.join(map(json.dumps,durable))+'\n')
 for event in [ {'type':'session','sessionId':'native-test'},
  {'type':'status','phase':'turn_end','reason':{'kind':'completed'}},
  {'type':'final','text':reply} ]:

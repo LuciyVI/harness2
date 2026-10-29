@@ -13,13 +13,12 @@ from .core.spec import BenchPrompts, BenchSpec, ChannelSpec
 from .snapshot import snapshot as snapshot
 from .substrate.dsh import DSH_SURFACE, DshSubstrate, write_base
 
-FINAL_RESPONSE_GUIDANCE = """Final response format for this project-copy execution:
+FINAL_RESPONSE_GUIDANCE = """Completion protocol for this project-copy execution:
 Write the complete deliverable and detailed verification evidence to files in this workspace.
 When the requested answer is long, preserve its full text in a workspace file.
-Keep the final chat reply under 200 words: summarize the outcome, verification status
-and remaining limitations, then give relative paths to the deliverable and report files.
-Leave full file contents, patches, logs and detailed tables in those files.
-The short reply must preserve an accurate account of incomplete or failed checks.
+Finish by calling harness2_finish with a short truthful summary and the relative report_path.
+The tool ends the turn; do not produce a separate final chat reply.
+Include verification status and limitations in the summary; preserve all details in the report.
 """
 
 
@@ -145,6 +144,7 @@ class DshTaskAdapter:
             stream_path=run / "dsh_session.jsonl",
             harness_dir=harness_dir or self.base_harness(),
             system=FINAL_RESPONSE_GUIDANCE,
+            handoff_max_chars=config.DSH_HANDOFF_MAX_CHARS,
             timeout=timeout or self.timeout,
         )
         (run / "response.md").write_text(result["text"])

@@ -59,19 +59,76 @@ class InstalledDshModeTests(unittest.TestCase):
             def do_POST(self):
                 request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 requests.append(request)
+                terminal = any(
+                    tool.get("function", {}).get("name") == "harness2_finish"
+                    for tool in request.get("tools", [])
+                )
+                delta, finish = {"role": "assistant", "content": "KEEP_BASE"}, "stop"
+                if terminal:
+                    finished_calls = sum(
+                        call.get("function", {}).get("name") == "harness2_finish"
+                        for message in request["messages"]
+                        for call in message.get("tool_calls", [])
+                    )
+                    wrote = any(message.get("role") == "tool" for message in request["messages"])
+                    name = "harness2_finish" if wrote else "write"
+                    arguments = (
+                        {
+                            "summary": "Fixture task completed; verification report saved.",
+                            "report_path": "task-report.md",
+                        }
+                        if wrote
+                        else {
+                            "file_path": "task-report.md",
+                            "content": "Fixture verification evidence.\n",
+                        }
+                    )
+                    if wrote and finished_calls == 0:
+                        arguments["summary"] = "x" * 2001
+                    elif wrote and finished_calls == 1:
+                        arguments["report_path"] = "missing-report.md"
+                    delta = {
+                        "role": "assistant",
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": f"{name}-{finished_calls}",
+                                "type": "function",
+                                "function": {"name": name, "arguments": json.dumps(arguments)},
+                            }
+                        ],
+                    }
+                    if wrote and finished_calls >= 2:
+                        delta["tool_calls"].append(
+                            {
+                                "index": 1,
+                                "id": "after-finish",
+                                "type": "function",
+                                "function": {
+                                    "name": "write",
+                                    "arguments": json.dumps(
+                                        {
+                                            "file_path": "after-finish.txt",
+                                            "content": "must be blocked",
+                                        }
+                                    ),
+                                },
+                            }
+                        )
+                    finish = "tool_calls"
                 self.send_response(200)
                 self.send_header("Content-Type", "text/event-stream")
                 self.end_headers()
-                for delta, finish in [
-                    ({"role": "assistant", "content": "KEEP_BASE"}, None),
-                    ({}, "stop"),
+                for chunk_delta, chunk_finish in [
+                    (delta, None),
+                    ({}, finish),
                 ]:
                     event = {
                         "id": "test",
                         "object": "chat.completion.chunk",
                         "model": "test-model",
                         "created": 1,
-                        "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
+                        "choices": [{"index": 0, "delta": chunk_delta, "finish_reason": chunk_finish}],
                     }
                     self.wfile.write(("data: " + json.dumps(event) + "\n\n").encode())
                 self.wfile.write(b"data: [DONE]\n\n")
@@ -193,6 +250,7 @@ class InstalledDshModeTests(unittest.TestCase):
                         "DSH_TOOLS_MODE": "native",
                         "TEST_DSH_MODE_KEY": "test-only",
                         "TEST_HARNESS2_WORKER_FAIL": "1" if index == 3 else "0",
+                        "HARNESS2_DSH_HANDOFF_MAX_CHARS": "2000",
                     }
                     requests_before = len(requests)
                     result = subprocess.run(
@@ -281,17 +339,21 @@ class InstalledDshModeTests(unittest.TestCase):
                                 if message.get("role") == "system"
                                 and isinstance(message.get("content"), str)
                             )
-                            if "Final response format for this project-copy execution:" in system:
+                            if "Completion protocol for this project-copy execution:" in system:
                                 self.assertIn(expected_guidance, system)
                                 execution_requests.append(request)
-                        self.assertEqual(len(execution_requests), 4)
+                        self.assertEqual(len(execution_requests), 16)
                         self.assertEqual(
                             [
                                 request.get("max_completion_tokens", request.get("max_tokens"))
                                 for request in execution_requests
                             ],
-                            [1024] * 4,
+                            [1024] * 16,
                         )
+                        for run in real_report.parent.glob("executions/*/*/*"):
+                            self.assertFalse((run / "workspace/after-finish.txt").exists())
+                            result = json.loads((run / "dsh_session.result.json").read_text())
+                            self.assertEqual(result["handoff"]["report_path"], "task-report.md")
             self.assertEqual(len(list((plugin / "cycles").glob("*.request.json"))), 3)
 
 

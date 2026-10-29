@@ -179,6 +179,22 @@ class DshTests(unittest.TestCase):
         self.assertIn("exit=1; reason=max-tokens", messages.getvalue())
         self.assertFalse(json.loads(stream.with_suffix(".result.json").read_text())["ok"])
 
+    def test_completed_plain_reply_cannot_replace_a_required_final_handoff(self):
+        stream = self.root / "missing-handoff/session.jsonl"
+        with self.assertRaisesRegex(RuntimeError, "Missing successful harness2_finish"):
+            DshSubstrate().run_session(
+                "calculate",
+                workspace=self.root / "plain-workspace",
+                stream_path=stream,
+                harness_dir=self.harness,
+                handoff_max_chars=2000,
+                timeout=10,
+            )
+        result = json.loads(stream.with_suffix(".result.json").read_text())
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "invalid_handoff")
+        self.assertEqual(result["native_reason"]["kind"], "completed")
+
     def test_materialisation_rejects_unloadable_skills(self):
         adapter = JobBenchAdapter("dsh")
         skill = self.harness / "skills/bad_skill/SKILL.md"

@@ -159,6 +159,7 @@ class DshSubstrate:
         timeout: int = 3600,
         extra_env: Mapping[str, str] | None = None,
         runtime_files: Mapping[str, Path] | None = None,
+        handoff_max_chars: int | None = None,
     ) -> dict:
         """One fresh session; failed/partial runs raise and cannot become cached evidence."""
         workspace = Path(workspace).resolve()
@@ -215,6 +216,7 @@ class DshSubstrate:
                 model=config.DSH_MODEL if model is None else model,
                 patch_files=patches,
                 tools=self.tool_allowlist,
+                handoff_max_chars=handoff_max_chars,
             )
             skills = workspace / "skills"
             if skills.is_dir():
@@ -289,6 +291,28 @@ class DshSubstrate:
                 + "\n"
             )
             raise RuntimeError(f"dsh durable trajectory is incomplete: {stream_path}")
+        if handoff_max_chars:
+            try:
+                handoff = runtime.final_handoff(
+                    stream_path, workspace, result["session_id"], handoff_max_chars
+                )
+            except RuntimeError as exc:
+                status_path.write_text(
+                    json.dumps(
+                        {
+                            "ok": False,
+                            "status": "invalid_handoff",
+                            "reason": {"kind": "invalid-handoff"},
+                            "native_reason": result["reason"],
+                            "error": str(exc),
+                        },
+                        indent=2,
+                    )
+                    + "\n"
+                )
+                raise
+            result["handoff"] = handoff
+            result["text"] = handoff["summary"] + "\n\nFull report: " + handoff["report_path"]
         status_path.write_text(
             json.dumps({k: v for k, v in result.items() if k != "text"}, indent=2) + "\n"
         )
