@@ -268,6 +268,30 @@ class InstalledDshModeTests(unittest.TestCase):
                         )
                         self.assertTrue((Path(report["harness"]) / "systemprompt.md").is_file())
                         self.assertGreaterEqual(len(requests), 7)
+                        expected_guidance = (
+                            (Path(__file__).parent / "expected/dsh-final-response.txt")
+                            .read_text()
+                            .strip()
+                        )
+                        execution_requests = []
+                        for request in requests[requests_before:]:
+                            system = "\n".join(
+                                message["content"]
+                                for message in request["messages"]
+                                if message.get("role") == "system"
+                                and isinstance(message.get("content"), str)
+                            )
+                            if "Final response format for this project-copy execution:" in system:
+                                self.assertIn(expected_guidance, system)
+                                execution_requests.append(request)
+                        self.assertEqual(len(execution_requests), 4)
+                        self.assertEqual(
+                            [
+                                request.get("max_completion_tokens", request.get("max_tokens"))
+                                for request in execution_requests
+                            ],
+                            [1024] * 4,
+                        )
             self.assertEqual(len(list((plugin / "cycles").glob("*.request.json"))), 3)
 
 

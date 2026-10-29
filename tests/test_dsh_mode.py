@@ -19,6 +19,7 @@ from harness2.cli.dsh_task import main as run_worker
 from harness2.core.proposer import Proposer, Reply
 from harness2.core.schedule import run_task
 from harness2.dsh_task import DshTaskAdapter, selected_result, snapshot
+from harness2.substrate.dsh import write_base
 
 FAKE_SOLVER = r"""
 import json, os, sys
@@ -34,11 +35,17 @@ overlay=json.loads(Path(sys.argv[sys.argv.index('--patch')+1]).read_text())
 instructions=next(row['insert'][0]['config']['text'] for row in overlay if row.get('insert'))
 if 'IMPROVED_GUIDANCE' in instructions:
  Path('app.txt').write_text('fixed\n')
+reply='Task result'
+if os.environ.get('TEST_LONG_REPORT') == '1':
+ if 'Final response format for this project-copy execution:' not in instructions:
+  raise SystemExit('Missing concise final response instructions')
+ Path('report.txt').write_text('verification evidence\n'*4000)
+ reply='Task result. Detailed verification: report.txt.'
 events=Path(os.environ['HARNESS2_DSH_EVENTS'])
 events.write_text(json.dumps({'sessionId':'native-test','type':'turn/end','data':{'reason':{'kind':'completed'}}})+'\n')
 for event in [ {'type':'session','sessionId':'native-test'},
  {'type':'status','phase':'turn_end','reason':{'kind':'completed'}},
- {'type':'final','text':'Task result'} ]:
+ {'type':'final','text':reply} ]:
  print(json.dumps(event))
 """
 
@@ -155,6 +162,54 @@ class DshModeTests(unittest.TestCase):
         self.assertTrue(Path(report["failures"][0]["report"]).is_file())
         self.assertFalse((output / "selected-harness").exists())
         self.assertEqual((project / "app.txt").read_text(), "original\n")
+
+    def test_custom_harness_hands_off_a_long_report_through_a_short_reply(self):
+        project = self.root / "project"
+        project.mkdir()
+        (project / "app.txt").write_text("original\n")
+        output = self.root / "cycle"
+        snapshot(project, output / "source")
+        home = self.root / "home"
+        (home / "profiles/headless").mkdir(parents=True)
+        solver = self.root / "solver.py"
+        solver.write_text(FAKE_SOLVER)
+        custom = write_base(self.root / "custom-harness", "Custom project instructions.")
+        original = (custom / "systemprompt.md").read_text()
+        with (
+            patch.dict(os.environ, {"TEST_LONG_REPORT": "1"}),
+            patch.multiple(
+                config,
+                DSH_HOME=home,
+                DSH_PROFILE="headless",
+                DSH_COMMAND=shlex.join([sys.executable, str(solver)]),
+                DSH_MODEL="local/test",
+                DSH_PATCH="",
+                DSH_CONTAINER_PATCH="",
+                PHASE_WIDTH=1,
+            ),
+        ):
+            adapter = DshTaskAdapter(
+                output, "Fix app.txt and write a detailed report", timeout=10, base_harness=custom
+            )
+            result = run_task(
+                "task",
+                1,
+                adapter=adapter,
+                prop=Editor(adapter.spec.channels["proposer"]),
+                runs_root=adapter.spec.runs_root,
+                modes=("agg",),
+            )
+            selected = selected_result(adapter, result, 1)
+        self.assertTrue(selected["ok"], result.to_dict())
+        self.assertEqual(
+            (Path(selected["workspace"]) / "report.txt").read_text(),
+            "verification evidence\n" * 4000,
+        )
+        reply = Path(selected["response"]).read_text()
+        self.assertLess(len(reply.split()), 200)
+        self.assertIn("report.txt", reply)
+        self.assertFalse((project / "report.txt").exists())
+        self.assertEqual((custom / "systemprompt.md").read_text(), original)
 
     def test_snapshot_excludes_runtime_dirs_and_refuses_external_links_and_large_projects(self):
         project = self.root / "project"

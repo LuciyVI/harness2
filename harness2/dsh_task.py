@@ -13,6 +13,15 @@ from .core.spec import BenchPrompts, BenchSpec, ChannelSpec
 from .snapshot import snapshot as snapshot
 from .substrate.dsh import DSH_SURFACE, DshSubstrate, write_base
 
+FINAL_RESPONSE_GUIDANCE = """Final response format for this project-copy execution:
+Write the complete deliverable and detailed verification evidence to files in this workspace.
+When the requested answer is long, preserve its full text in a workspace file.
+Keep the final chat reply under 200 words: summarize the outcome, verification status
+and remaining limitations, then give relative paths to the deliverable and report files.
+Leave full file contents, patches, logs and detailed tables in those files.
+The short reply must preserve an accurate account of incomplete or failed checks.
+"""
+
 
 class DshCycleError(RuntimeError):
     """A failed full cycle retains its summary and execution failure causes."""
@@ -135,6 +144,7 @@ class DshTaskAdapter:
             workspace=workspace,
             stream_path=run / "dsh_session.jsonl",
             harness_dir=harness_dir or self.base_harness(),
+            system=FINAL_RESPONSE_GUIDANCE,
             timeout=timeout or self.timeout,
         )
         (run / "response.md").write_text(result["text"])

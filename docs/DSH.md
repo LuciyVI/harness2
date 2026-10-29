@@ -134,6 +134,13 @@ recursion summary and execution failure reports; the chat error names the
 failed final execution and its backend cause. Progress remains in the linked
 log instead of filling the failure card with heartbeat lines.
 
+Project-copy executions request a final chat reply under 200 words with the
+outcome, verification status, limitations and relative artifact paths. The
+complete deliverable and detailed evidence belong in workspace files. This
+reporting instruction accompanies every baseline and refined execution,
+including custom harnesses. It is guidance to the model; output budgets remain
+unchanged and a `max-tokens` termination still fails the execution.
+
 The installer adds a marked block to the profile patch and backs up the
 original with mode `0600`. It does not modify the installed npm runtime or
 transport fixes. Remove the command with:

@@ -1,0 +1,7 @@
+Final response format for this project-copy execution:
+Write the complete deliverable and detailed verification evidence to files in this workspace.
+When the requested answer is long, preserve its full text in a workspace file.
+Keep the final chat reply under 200 words: summarize the outcome, verification status
+and remaining limitations, then give relative paths to the deliverable and report files.
+Leave full file contents, patches, logs and detailed tables in those files.
+The short reply must preserve an accurate account of incomplete or failed checks.
