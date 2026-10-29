@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 
 from .. import config
-from ..substrate.dsh_runtime import read_events
+from ..substrate.dsh_runtime import output_limit_details, read_events
 
 
 def _modified(path: Path) -> int:
@@ -58,6 +58,17 @@ def session_status(cycle: Path, *, temp_root: Path | None = None) -> list[dict]:
         try:
             record = json.loads(status_file.read_text())
             state = "ok" if record.get("ok") is True else record.get("status", "failed")
+            error = error or record.get("error", "")
+            if reason == "max-tokens" and not error:
+                session = next(
+                    (event.get("sessionId") for event in events if event.get("type") == "session"),
+                    None,
+                )
+                raw = path.with_name(path.name.removesuffix(".headless.jsonl") + ".jsonl")
+                detail = record.get("output_limit") or output_limit_details(raw, session)
+                pending = detail.get("pending_tools", [])
+                if pending:
+                    error = f"Output limit interrupted {pending[-1]['tool']} arguments for {pending[-1].get('file_path')}; raw JSON complete={pending[-1]['arguments_complete']}"
         except FileNotFoundError:
             pass
         except (OSError, ValueError, AttributeError):

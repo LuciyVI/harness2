@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shlex
 import shutil
 import signal
@@ -53,6 +54,10 @@ export default function harness2(ctx, config) {
       text: config.text || '', interpolate: false});
   });
   ctx.on('agent/created', ({agent}) => {
+    if (config.maxTokens !== undefined) agent.ctx.on('agent/request', async (_payload, next) => {
+      const request = await next();
+      return {...request, maxTokens: config.maxTokens};
+    });
     if (config.tools) agent.ctx.tools.restrict({allow: config.handoffMaxChars
       ? [...config.tools, 'harness2_finish'] : config.tools});
     if (!config.handoffMaxChars) return;
@@ -177,6 +182,7 @@ def prepare_session(
     patch_files: tuple[Path, ...] = (),
     tools: tuple[str, ...] | None = None,
     handoff_max_chars: int | None = None,
+    max_tokens: int | None = None,
 ) -> dict[str, str]:
     """Create a private base+headless profile, retaining source provider/plugin patches.
 
@@ -184,6 +190,8 @@ def prepare_session(
     UI-specific overrides in a web profile must be removed in the source profile
     chosen for automation; required plugin failures remain fatal.
     """
+    if max_tokens is not None and (type(max_tokens) is not int or max_tokens < 1):
+        raise ValueError("max_tokens must be a positive integer")
     if handoff_max_chars is not None and (
         type(handoff_max_chars) is not int or handoff_max_chars < 1
     ):
@@ -261,6 +269,7 @@ def prepare_session(
                         "text": text,
                         **({"tools": list(tools)} if tools is not None else {}),
                         **({"handoffMaxChars": handoff_max_chars} if handoff_max_chars else {}),
+                        **({"maxTokens": max_tokens} if max_tokens is not None else {}),
                     },
                 }
             ]
@@ -340,6 +349,51 @@ def durable_complete(path: Path, session_id: str) -> bool:
         if event.get("sessionId") == session_id and event.get("type") == "turn/end":
             last = (event.get("data") or {}).get("reason")
     return isinstance(last, dict) and last.get("kind") == "completed"
+
+
+def output_limit_details(path: Path, session_id: str) -> dict:
+    """Classify an exhausted generation from raw chunks, without returning payloads."""
+    last = None
+    maximum = None
+    for event in read_events(path):
+        if event.get("sessionId") != session_id:
+            continue
+        data = event.get("data") or {}
+        if event.get("type") == "request/header":
+            maximum = data.get("header", {}).get("config", {}).get("maxTokens")
+        elif event.get("type") == "assistant/message":
+            last = data
+    if not last:
+        return {}
+    pending = []
+    for part in last.get("stream", []):
+        if part.get("type") != "tool-call-chunks":
+            continue
+        raw = "".join(part.get("args", []))
+        match = re.search(r'"(?:file_path|path)"\s*:\s*("(?:[^"\\]|\\.)*")', raw)
+        try:
+            target = json.loads(match.group(1)) if match else None
+        except ValueError:
+            target = None
+        try:
+            json.loads(raw)
+            complete = True
+        except (TypeError, ValueError):
+            complete = False
+        pending.append(
+            {
+                "tool": part.get("name"),
+                "file_path": target,
+                "argument_chars": len(raw),
+                "arguments_complete": complete,
+            }
+        )
+    return {
+        "phase": "tool-call" if pending else "assistant-text",
+        "max_tokens": maximum,
+        "output_tokens": (last.get("usage") or {}).get("outputTokens"),
+        "pending_tools": pending,
+    }
 
 
 def final_handoff(path: Path, workspace: Path, session_id: str, max_chars: int) -> dict:

@@ -160,6 +160,7 @@ class DshSubstrate:
         extra_env: Mapping[str, str] | None = None,
         runtime_files: Mapping[str, Path] | None = None,
         handoff_max_chars: int | None = None,
+        max_tokens: int | None = None,
     ) -> dict:
         """One fresh session; failed/partial runs raise and cannot become cached evidence."""
         workspace = Path(workspace).resolve()
@@ -217,6 +218,7 @@ class DshSubstrate:
                 patch_files=patches,
                 tools=self.tool_allowlist,
                 handoff_max_chars=handoff_max_chars,
+                max_tokens=max_tokens,
             )
             skills = workspace / "skills"
             if skills.is_dir():
@@ -268,6 +270,23 @@ class DshSubstrate:
         if not result["ok"]:
             reason = result["reason"]
             kind = reason.get("kind") if isinstance(reason, dict) else reason
+            if kind == "max-tokens":
+                try:
+                    detail = runtime.output_limit_details(stream_path, result["session_id"])
+                except (OSError, ValueError, TypeError, AttributeError):
+                    detail = {"phase": "unknown", "pending_tools": []}
+                result["output_limit"] = detail
+                pending = detail.get("pending_tools", [])
+                target = (
+                    f" while emitting {pending[-1]['tool']} arguments"
+                    if pending
+                    else f" during {detail.get('phase', 'unclassified response')}"
+                )
+                if pending and pending[-1].get("file_path"):
+                    target += f" for {pending[-1]['file_path']}"
+                result["error"] = (
+                    f"Output token limit exhausted{target}; no truncated call was executed"
+                )
             status_path.write_text(
                 json.dumps({**result, "status": "failed", "workspace": str(workspace)}, indent=2)
                 + "\n"
@@ -275,7 +294,10 @@ class DshSubstrate:
             notice(
                 f"failed in {result['wall_s']:.1f}s; exit={rc}; reason={kind}; report={status_path}"
             )
-            raise RuntimeError(f"dsh failed (exit={rc}, reason={result['reason']}); see {stderr}")
+            explanation = f"; {result['error']}" if result.get("error") else ""
+            raise RuntimeError(
+                f"dsh failed (exit={rc}, reason={result['reason']}){explanation}; see {stderr}"
+            )
         if not runtime.durable_complete(stream_path, result["session_id"]):
             notice(f"failed; incomplete durable trajectory; events={stream_path}")
             status_path.write_text(

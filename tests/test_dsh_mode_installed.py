@@ -80,7 +80,7 @@ class InstalledDshModeTests(unittest.TestCase):
                         if wrote
                         else {
                             "file_path": "task-report.md",
-                            "content": "Fixture verification evidence.\n",
+                            "content": "Fixture verification evidence.\n" * 1500,
                         }
                     )
                     if wrote and finished_calls == 0:
@@ -128,7 +128,9 @@ class InstalledDshModeTests(unittest.TestCase):
                         "object": "chat.completion.chunk",
                         "model": "test-model",
                         "created": 1,
-                        "choices": [{"index": 0, "delta": chunk_delta, "finish_reason": chunk_finish}],
+                        "choices": [
+                            {"index": 0, "delta": chunk_delta, "finish_reason": chunk_finish}
+                        ],
                     }
                     self.wfile.write(("data: " + json.dumps(event) + "\n\n").encode())
                 self.wfile.write(b"data: [DONE]\n\n")
@@ -153,14 +155,21 @@ class InstalledDshModeTests(unittest.TestCase):
                             "baseURL": f"http://127.0.0.1:{server.server_port}/v1",
                             "apiKeyEnv": "TEST_DSH_MODE_KEY",
                             "reasoning": "off",
-                            "defaultContextWindow": 32768,
+                            "compat": {
+                                "thinkingFormat": "deepseek",
+                                "maxTokensField": "max_tokens",
+                                "supportsReasoningEffort": True,
+                                "supportsDeveloperRole": False,
+                            },
+                            "defaultContextWindow": 262144,
                             "defaultMaxTokens": 1024,
                             "models": [
                                 {
                                     "id": "test-model",
                                     "name": "test-model",
-                                    "contextWindow": 32768,
+                                    "contextWindow": 262144,
                                     "maxTokens": 1024,
+                                    "reasoningEfforts": {"off": None, "high": "high"},
                                     "input": ["text"],
                                 }
                             ],
@@ -251,6 +260,7 @@ class InstalledDshModeTests(unittest.TestCase):
                         "TEST_DSH_MODE_KEY": "test-only",
                         "TEST_HARNESS2_WORKER_FAIL": "1" if index == 3 else "0",
                         "HARNESS2_DSH_HANDOFF_MAX_CHARS": "2000",
+                        "HARNESS2_DSH_TASK_MAX_TOKENS": "16384",
                     }
                     requests_before = len(requests)
                     result = subprocess.run(
@@ -306,7 +316,9 @@ class InstalledDshModeTests(unittest.TestCase):
                         self.assertIn("Usage:", serialized)
                         self.assertNotIn("NATIVE_MODE_GUIDANCE", visible)
                         self.assertNotIn("Harness² mode is enabled", visible)
+                        self.assertEqual(requests[-1].get("max_tokens"), 1024)
                     else:
+                        self.assertEqual(requests[-1].get("max_tokens"), 1024)
                         self.assertIn("Harness\\u00b2 full cycle completed", visible)
                         real_report = next(
                             path
@@ -348,12 +360,22 @@ class InstalledDshModeTests(unittest.TestCase):
                                 request.get("max_completion_tokens", request.get("max_tokens"))
                                 for request in execution_requests
                             ],
-                            [1024] * 16,
+                            [16384] * 16,
+                        )
+                        self.assertTrue(
+                            all(
+                                request.get("thinking") == {"type": "disabled"}
+                                for request in execution_requests
+                            )
                         )
                         for run in real_report.parent.glob("executions/*/*/*"):
                             self.assertFalse((run / "workspace/after-finish.txt").exists())
                             result = json.loads((run / "dsh_session.result.json").read_text())
                             self.assertEqual(result["handoff"]["report_path"], "task-report.md")
+                            self.assertEqual(
+                                (run / "workspace/task-report.md").read_text(),
+                                "Fixture verification evidence.\n" * 1500,
+                            )
             self.assertEqual(len(list((plugin / "cycles").glob("*.request.json"))), 3)
 
 

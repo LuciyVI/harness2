@@ -1,4 +1,5 @@
 Completion protocol for this project-copy execution:
+Keep per-step commentary brief. Write large files incrementally in small tool calls.
 Write the complete deliverable and detailed verification evidence to files in this workspace.
 When the requested answer is long, preserve its full text in a workspace file.
 Finish by calling harness2_finish with a short truthful summary and the relative report_path.

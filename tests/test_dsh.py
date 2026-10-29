@@ -55,6 +55,12 @@ if 'WAIT_AFTER_OUTPUT' in prompt:
  print(json.dumps({'type':'status','phase':'step_start','step':1}),flush=True)
  time.sleep(30)
 reason = 'max-tokens' if 'MAX_TOKENS' in prompt else 'completed'
+if 'MAX_TOKENS_TOOL' in prompt:
+ raw='{"file_path":"large-file.txt","content":"PRIVATE_FRAGMENT'
+ entry={'sessionId':str(home),'type':'assistant/message','data':{'step':2,'usage':{'outputTokens':8192},'stream':[
+  {'type':'tool-call-chunks','name':'write','args':[raw]},
+  {'chunk':{'type':'block-end','block':{'type':'tool-call','name':'write','arguments':json.dumps({'file_path':'large-file.txt','content':'PRIVATE_FRAGMENT'})}}}]}}
+ with events.open('a') as f: f.write(json.dumps(entry)+'\n')
 with events.open('a') as f: f.write(json.dumps({'sessionId':str(home),'type':'turn/end','data':{'reason':{'kind':reason}}})+'\n')
 print(json.dumps({'type':'session','sessionId':str(home)}))
 print(json.dumps({'type':'status','phase':'turn_end','reason':{'kind':reason}}))
@@ -194,6 +200,27 @@ class DshTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["status"], "invalid_handoff")
         self.assertEqual(result["native_reason"]["kind"], "completed")
+
+    def test_output_limit_identifies_raw_truncated_tool_arguments_without_executing_them(self):
+        stream = self.root / "limited-write/session.jsonl"
+        workspace = self.root / "limited-write-workspace"
+        with self.assertRaisesRegex(
+            RuntimeError, "while emitting write arguments for large-file.txt"
+        ):
+            DshSubstrate().run_session(
+                "MAX_TOKENS_TOOL",
+                workspace=workspace,
+                stream_path=stream,
+                harness_dir=self.harness,
+                timeout=10,
+            )
+        result = json.loads(stream.with_suffix(".result.json").read_text())
+        detail = result["output_limit"]
+        self.assertEqual(detail["phase"], "tool-call")
+        self.assertFalse(detail["pending_tools"][0]["arguments_complete"])
+        self.assertNotIn("PRIVATE_FRAGMENT", json.dumps(detail))
+        self.assertFalse((workspace / "large-file.txt").exists())
+        self.assertFalse(result["ok"])
 
     def test_materialisation_rejects_unloadable_skills(self):
         adapter = JobBenchAdapter("dsh")

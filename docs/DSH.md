@@ -143,8 +143,15 @@ requires an existing nonempty regular report inside the workspace and rejects
 symbolic links and outside paths. Later tool calls are blocked after the
 successful handoff. Baseline, refined and custom harness executions require a
 recorded successful handoff, completed durable turn and zero process exit.
-Plain final text and `max-tokens` terminations remain failures. Output token
-budgets remain unchanged.
+Plain final text and `max-tokens` terminations remain failures.
+
+Project-copy task requests use a fixed output budget of 16384 tokens per model
+response, configured with `HARNESS2_DSH_TASK_MAX_TOKENS`. Commentary and tool-call
+arguments share this budget. Other dsh sessions retain their source-profile
+budgets. The session wall timeout remains separate. On exhaustion, diagnostics
+identify pending tool calls from the raw stream; repaired JSON in a later
+parsed block is not proof that the original tool arguments were complete.
+Truncated calls are never executed or adopted.
 
 The installer adds a marked block to the profile patch and backs up the
 original with mode `0600`. It does not modify the installed npm runtime or

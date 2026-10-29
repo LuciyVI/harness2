@@ -14,6 +14,7 @@ from .snapshot import snapshot as snapshot
 from .substrate.dsh import DSH_SURFACE, DshSubstrate, write_base
 
 FINAL_RESPONSE_GUIDANCE = """Completion protocol for this project-copy execution:
+Keep per-step commentary brief. Write large files incrementally in small tool calls.
 Write the complete deliverable and detailed verification evidence to files in this workspace.
 When the requested answer is long, preserve its full text in a workspace file.
 Finish by calling harness2_finish with a short truthful summary and the relative report_path.
@@ -145,6 +146,7 @@ class DshTaskAdapter:
             harness_dir=harness_dir or self.base_harness(),
             system=FINAL_RESPONSE_GUIDANCE,
             handoff_max_chars=config.DSH_HANDOFF_MAX_CHARS,
+            max_tokens=config.DSH_TASK_MAX_TOKENS,
             timeout=timeout or self.timeout,
         )
         (run / "response.md").write_text(result["text"])
